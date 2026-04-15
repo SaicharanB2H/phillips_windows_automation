@@ -52,7 +52,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Desktop Automation Agent  —  Powered by Grok")
+        self.setWindowTitle("Desktop Automation Agent")
         self.setMinimumSize(1200, 720)
         self.resize(1440, 900)
 
@@ -196,6 +196,8 @@ class MainWindow(QMainWindow):
         msg = "Execution complete ✓" if success else "Execution finished with errors"
         ToastNotification.show_toast(self, msg, level)
         self._status_bar.showMessage(msg, 5000)
+        # Refresh memory badge — a task may have saved new facts
+        self._sidebar.refresh_memory_count()
 
     @Slot(object)
     def _on_step_started(self, step: PlanStep):
@@ -343,11 +345,11 @@ class MainWindow(QMainWindow):
         """Check API key and Office availability, update status bar."""
         api_key = os.getenv("GROK_API_KEY", "")
         if api_key and not api_key.startswith("xai-your"):
-            self._sb_api_lbl.setText("API: Grok ✓")
+            self._sb_api_lbl.setText("API: gpt-oss-120b ✓")
             self._sb_api_lbl.setStyleSheet(
                 f"color: {COLORS['accent_green']}; padding: 0 8px;"
             )
-            self._sidebar.set_api_status(True, "Grok Connected")
+            self._sidebar.set_api_status(True, "gpt-oss-120b")
         else:
             self._sb_api_lbl.setText("API: No Key ⚠")
             self._sb_api_lbl.setStyleSheet(

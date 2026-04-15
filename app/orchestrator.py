@@ -23,10 +23,12 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 from agents.excel_agent import ExcelAgent
 from agents.email_agent import EmailAgent
 from agents.file_agent import FileAgent
+from agents.memory_agent import MemoryAgent
 from agents.planner_agent import PlannerAgent
 from agents.ui_automation_agent import UIAutomationAgent
 from agents.word_agent import WordAgent
 from app.context_manager import ContextManager
+from storage.memory_store import get_memory_store
 from models.schemas import (
     AgentResult, AgentType, Artifact, ArtifactType,
     ExecutionMode, ExecutionPlan, Message, MessageRole,
@@ -122,6 +124,7 @@ class Orchestrator:
         self._email     = EmailAgent()
         self._file      = FileAgent()
         self._ui_auto   = UIAutomationAgent()
+        self._memory    = MemoryAgent()
 
         # Agent routing map
         self._agent_map = {
@@ -130,7 +133,11 @@ class Orchestrator:
             AgentType.EMAIL:         self._email,
             AgentType.FILE:          self._file,
             AgentType.UI_AUTOMATION: self._ui_auto,
+            AgentType.MEMORY:        self._memory,
         }
+
+        # Persistent memory store
+        self._memory_store = get_memory_store()
 
         # Services
         self._approval  = get_approval_service()
@@ -215,11 +222,30 @@ class Orchestrator:
         # Set mode from request
         self._approval.set_mode(request.execution_mode)
 
-        # Add attached files to context
+        # ── Auto-extract facts from the user's message ───────────────────
+        extracted = self._memory_store.auto_extract(request.text)
+        if extracted:
+            logger.info(f"Auto-saved {len(extracted)} memory fact(s) from user message")
+
+        # ── Inject all memories into the planner and context ─────────────
+        memories = self._memory_store.as_context_dict()
+        if memories:
+            self._planner.set_memory(memories)
+            for k, v in memories.items():
+                self._context.set(k, v)
+
+        # ── Inject attached files — make them unavoidable for the planner ──
         if request.attachments:
             self._planner.set_context("attached_files", request.attachments)
-            for path in request.attachments:
-                self._context.set(f"attached_file_{path.split('/')[-1]}", path)
+            # Index-based context keys: {{attached_file_0}}, {{attached_file_1}} …
+            for i, path in enumerate(request.attachments):
+                self._context.set(f"attached_file_{i}", path)
+                # Also by filename stem for convenience: {{report_pdf}}
+                stem = path.replace("\\", "/").split("/")[-1]
+                safe_stem = stem.replace(" ", "_").replace(".", "_")
+                self._context.set(f"attached_{safe_stem}", path)
+            # Always expose the first attachment as {{attached_file}} shorthand
+            self._context.set("attached_file", request.attachments[0])
 
         # Save user message
         self._save_message(request.session_id, MessageRole.USER, request.text, request.attachments)

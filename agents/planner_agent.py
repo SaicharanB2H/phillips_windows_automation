@@ -60,10 +60,15 @@ class PlannerAgent:
         self._logger = logger
         self._context: Dict[str, Any] = {}
         self._office_status: Dict[str, bool] = {}
+        self._memory: Dict[str, str] = {}   # persistent user memory
 
     def set_context(self, key: str, value: Any):
         """Store context values that can inform planning (e.g. attached file paths)."""
         self._context[key] = value
+
+    def set_memory(self, memory: Dict[str, str]):
+        """Inject persistent user memory so the LLM knows it without being asked."""
+        self._memory = memory
 
     def set_office_status(self, status: Dict[str, bool]):
         """Tell the planner which Office apps are available."""
@@ -145,7 +150,7 @@ class PlannerAgent:
     # ─────────────────────────────────────────
 
     def _build_system_prompt(self) -> str:
-        """Add runtime context to the base system prompt."""
+        """Add runtime context and persistent memory to the base system prompt."""
         extras = []
         extras.append(f"Current date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         extras.append(f"Output directory: {Path.home() / 'Desktop'}")
@@ -158,17 +163,67 @@ class PlannerAgent:
             if unavail:
                 extras.append(f"Unavailable Office apps (use file libraries): {', '.join(unavail)}")
 
-        if self._context.get("attached_files"):
-            extras.append(f"User attached files: {self._context['attached_files']}")
-
         extra_block = "\n".join(f"- {e}" for e in extras)
-        return f"{PLANNER_SYSTEM_PROMPT}\n\n## Runtime Context\n{extra_block}"
+        prompt = f"{PLANNER_SYSTEM_PROMPT}\n\n## Runtime Context\n{extra_block}"
+
+        # ── Attached files — injected as a loud, unmissable block ───────────
+        if self._context.get("attached_files"):
+            files = self._context["attached_files"]
+            attach_lines = [
+                "\n## ATTACHED FILES — CRITICAL",
+                "The user has already provided the following file(s). They are saved on disk.",
+                "RULES:",
+                "  1. Use these EXACT paths in your plan — do NOT use files.smart_find or files.search for them.",
+                "  2. Do NOT ask the user where the file is — it is already provided below.",
+                "  3. Do NOT ask which reader/tool to use — use the built-in tool for the file type.",
+                "     - PDF files  → files.read_pdf(path=...)",
+                "     - Excel files → excel.open_workbook(path=...)",
+                "     - Word files  → word.open_document(path=...)",
+                "     - Text/CSV   → files.read_text(path=...)",
+                "",
+                "Attached file paths (use directly in tool arguments):",
+            ]
+            for i, fp in enumerate(files):
+                ext = fp.rsplit(".", 1)[-1].lower() if "." in fp else "unknown"
+                attach_lines.append(f"  [{i}] {fp}  (type: {ext.upper()}, template: {{{{attached_file_{i}}}}})")
+            attach_lines.append(
+                f"\nShorthand: the FIRST attached file is always available as {{{{attached_file}}}}"
+            )
+            prompt += "\n" + "\n".join(attach_lines)
+
+        # Inject persistent user memory — LLM sees these as pre-known facts
+        if self._memory:
+            mem_lines = ["## Persistent User Memory",
+                         "These facts were remembered from previous sessions.",
+                         "Use them directly — do NOT ask the user to provide them again.\n"]
+            # Group by category prefix for readability
+            cats: Dict[str, list] = {}
+            for k, v in self._memory.items():
+                cat = "facts"
+                if any(k.startswith(p) for p in ("user_",)):
+                    cat = "User"
+                elif any(k.startswith(p) for p in ("contact_",)):
+                    cat = "Contacts"
+                elif any(k.startswith(p) for p in ("preferred_", "output_")):
+                    cat = "Preferences"
+                else:
+                    cat = "Facts"
+                cats.setdefault(cat, []).append(f"  - {k}: {v}")
+            for cat, lines in cats.items():
+                mem_lines.append(f"### {cat}")
+                mem_lines.extend(lines)
+            prompt += "\n\n" + "\n".join(mem_lines)
+
+        return prompt
 
     def _build_user_message(self, request: UserRequest) -> str:
         """Format the user message with context hints."""
         msg = request.text
         if request.attachments:
-            msg += f"\n\nAttached files: {', '.join(request.attachments)}"
+            msg += "\n\n[ATTACHED FILES — already on disk, use paths directly]"
+            for i, fp in enumerate(request.attachments):
+                msg += f"\n  File {i}: {fp}"
+            msg += "\nDo NOT ask where the file is. Do NOT ask which tool to use."
         if self._context:
             relevant = {k: v for k, v in self._context.items()
                        if k not in ("attached_files",)}

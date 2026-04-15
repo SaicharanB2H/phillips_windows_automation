@@ -39,6 +39,49 @@ def setup_logging():
     _setup(log_level=log_level, log_file=log_file)
 
 
+def _make_app_icon() -> "QIcon":
+    """
+    Build a multi-resolution QIcon for the title bar and taskbar.
+    Renders a rounded-square accent-blue tile with a white bot SVG centred on it.
+    Sizes: 16, 32, 48, 64, 128 px — Windows uses all of them.
+    """
+    from PySide6.QtGui import QIcon, QPainter, QColor, QPainterPath
+    from PySide6.QtCore import QRectF, QSize
+    from PySide6.QtWidgets import QApplication
+    from icons.icon_manager import get_pixmap
+
+    ACCENT  = QColor("#4F9DFF")   # accent blue
+    FG      = "#FFFFFF"           # white bot icon
+
+    icon = QIcon()
+
+    for size in (16, 32, 48, 64, 128):
+        from PySide6.QtGui import QPixmap
+        canvas = QPixmap(size, size)
+        canvas.fill(QColor(0, 0, 0, 0))          # transparent base
+
+        p = QPainter(canvas)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Rounded-square background
+        radius = size * 0.22
+        rect   = QRectF(0, 0, size, size)
+        path   = QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+        p.fillPath(path, ACCENT)
+
+        # Bot icon centred — 60 % of tile size
+        icon_sz  = max(8, int(size * 0.60))
+        offset   = (size - icon_sz) // 2
+        bot_px   = get_pixmap("bot", icon_sz, FG)
+        p.drawPixmap(offset, offset, bot_px)
+
+        p.end()
+        icon.addPixmap(canvas)
+
+    return icon
+
+
 def main():
     # ── 1. Load environment ──────────────────
     load_env()
@@ -65,9 +108,14 @@ def main():
     font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
     app.setFont(font)
 
+    # ── App icon (title bar + taskbar) ────────
+    app_icon = _make_app_icon()
+    app.setWindowIcon(app_icon)
+
     # ── 4. Launch main window ─────────────────
     from ui.main_window import MainWindow
     window = MainWindow()
+    window.setWindowIcon(app_icon)
     window.show()
 
     # ── 5. Event loop ─────────────────────────

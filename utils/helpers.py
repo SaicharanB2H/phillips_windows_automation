@@ -102,6 +102,126 @@ def find_latest_file(
     return results[0] if results else None
 
 
+# Standard locations searched when no directory is specified
+_STANDARD_SEARCH_DIRS = [
+    Path.home() / "Desktop",
+    Path.home() / "Downloads",
+    Path.home() / "Documents",
+    Path.home(),
+    Path(os.getenv("USERPROFILE", str(Path.home()))),
+]
+
+# Extension groups for natural-language type hints
+EXTENSION_GROUPS: Dict[str, List[str]] = {
+    "pdf":        [".pdf"],
+    "excel":      [".xlsx", ".xls", ".xlsm", ".csv"],
+    "word":       [".docx", ".doc"],
+    "image":      [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"],
+    "text":       [".txt", ".md", ".log"],
+    "powerpoint": [".pptx", ".ppt"],
+    "zip":        [".zip", ".rar", ".7z"],
+    "video":      [".mp4", ".avi", ".mkv", ".mov"],
+    "audio":      [".mp3", ".wav", ".m4a"],
+}
+
+
+def smart_find_file(
+    hint: str = "",
+    extensions: List[str] = None,
+    locations: List[Union[str, Path]] = None,
+    max_results: int = 10,
+) -> List[Dict[str, Any]]:
+    """
+    Smart multi-location file search that understands natural language hints.
+
+    - Searches Desktop, Downloads, Documents (and any extra locations) simultaneously
+    - Matches by extension and keyword fragments found in the filename
+    - Ranks by keyword relevance first, then by most recently modified
+    - Returns a flat ranked list of file metadata dicts
+
+    Args:
+        hint:       Free-text hint — keywords extracted from this (e.g. "sales report pdf")
+        extensions: Explicit list of extensions to filter (e.g. [".pdf", ".docx"]).
+                    If omitted, inferred from hint keywords.
+        locations:  Directories to search. Defaults to Desktop, Downloads, Documents, Home.
+        max_results: Maximum total results to return.
+    """
+    _TEMP_PREFIXES = ("~$",)
+    _TEMP_SUFFIXES = (".tmp",)
+
+    hint_lower = (hint or "").lower()
+
+    # --- Infer extensions from hint if not given ---
+    if not extensions:
+        extensions = []
+        for group_name, exts in EXTENSION_GROUPS.items():
+            if group_name in hint_lower:
+                extensions.extend(exts)
+                break
+        # Also check for bare extensions like "pdf" or ".pdf" in the hint
+        for word in hint_lower.split():
+            word = word.lstrip(".")
+            candidate = f".{word}"
+            if len(word) <= 5 and candidate not in extensions:
+                extensions.append(candidate)
+
+    # --- Resolve search directories ---
+    search_dirs: List[Path] = []
+    for loc in (locations or _STANDARD_SEARCH_DIRS):
+        p = Path(os.path.expandvars(os.path.expanduser(str(loc))))
+        if p.exists() and p not in search_dirs:
+            search_dirs.append(p)
+    if not search_dirs:
+        search_dirs = [d for d in _STANDARD_SEARCH_DIRS if d.exists()]
+
+    # --- Extract keyword tokens from hint (ignore extension words and stop words) ---
+    stop_words = {
+        "the", "a", "an", "file", "document", "my", "on", "in", "from",
+        "find", "open", "read", "latest", "recent", "newest", "pdf",
+        "excel", "word", "image", "text", "folder",
+    }
+    hint_keywords = [
+        w for w in re.sub(r"[^a-z0-9 ]", " ", hint_lower).split()
+        if w not in stop_words and len(w) > 1
+    ]
+
+    # --- Collect all matching files across all locations ---
+    seen: set = set()
+    candidates: List[Tuple[int, float, Path]] = []  # (score, -mtime, path)
+
+    for search_dir in search_dirs:
+        patterns = [f"*{ext}" for ext in extensions] if extensions else ["*.*"]
+        for pat in patterns:
+            for f in search_dir.rglob(pat):
+                if not f.is_file():
+                    continue
+                if str(f) in seen:
+                    continue
+                if any(f.name.startswith(p) for p in _TEMP_PREFIXES):
+                    continue
+                if any(f.name.endswith(s) for s in _TEMP_SUFFIXES):
+                    continue
+                seen.add(str(f))
+
+                name_lower = f.name.lower()
+                # Keyword relevance score: count how many hint keywords appear in filename
+                kw_score = sum(1 for kw in hint_keywords if kw in name_lower)
+
+                mtime = f.stat().st_mtime
+                candidates.append((kw_score, mtime, f))
+
+    # --- Sort: highest keyword score first, then newest file first ---
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+
+    results = []
+    for kw_score, mtime, f in candidates[:max_results]:
+        meta = file_metadata(f)
+        meta["relevance_score"] = kw_score
+        results.append(meta)
+
+    return results
+
+
 def file_metadata(path: Union[str, Path]) -> Dict[str, Any]:
     """Return dict with file size, dates, extension."""
     p = Path(path)

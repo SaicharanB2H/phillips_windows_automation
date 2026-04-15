@@ -31,6 +31,7 @@ class AgentType(str, Enum):
     FILE          = "file"
     UI_AUTOMATION = "ui_automation"
     ORCHESTRATOR  = "orchestrator"
+    MEMORY        = "memory"
 
 
 class StepStatus(str, Enum):

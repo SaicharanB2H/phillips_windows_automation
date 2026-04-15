@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 from icons.icon_manager import IconButton, get_icon, get_pixmap
 from models.schemas import ExecutionMode, SessionState
 from prompts.planner_prompts import SAMPLE_PROMPTS
+from storage.memory_store import get_memory_store
 from ui.styles import COLORS
 from ui.widgets import HDivider, SectionLabel
 
@@ -71,7 +72,7 @@ class SidebarPanel(QWidget):
             f"color: {COLORS['text_primary']}; font-size: 14px; "
             f"font-weight: 700; background: transparent;"
         )
-        version = QLabel("v1.0  ·  Grok Powered")
+        version = QLabel("v1.0  ·  gpt-oss-120b")
         version.setStyleSheet(
             f"color: {COLORS['text_muted']}; font-size: 10px; background: transparent;"
         )
@@ -216,6 +217,44 @@ class SidebarPanel(QWidget):
         layout.addWidget(scroll, 1)
         layout.addWidget(HDivider())
 
+        # ── Memory Status Bar ─────────────────────
+        mem_bar = QWidget()
+        mem_bar.setStyleSheet(f"background: {COLORS['bg_secondary']};")
+        mem_layout = QHBoxLayout(mem_bar)
+        mem_layout.setContentsMargins(12, 4, 12, 4)
+        mem_layout.setSpacing(6)
+
+        mem_icon = QLabel()
+        mem_icon.setPixmap(get_pixmap("cpu", size=12, color=COLORS["accent_blue"]))
+        mem_icon.setFixedSize(14, 14)
+        mem_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mem_icon.setStyleSheet("background: transparent;")
+        mem_layout.addWidget(mem_icon)
+
+        self._mem_lbl = QLabel()
+        self._mem_lbl.setStyleSheet(
+            f"color: {COLORS['text_muted']}; font-size: 10px;"
+        )
+        mem_layout.addWidget(self._mem_lbl)
+        mem_layout.addStretch()
+
+        mem_clear_btn = IconButton(
+            icon_name="trash", size=10,
+            color=COLORS["text_muted"], hover_color=COLORS["accent_red"],
+            btn_size=None, text="  Clear",
+        )
+        mem_clear_btn.setFixedHeight(20)
+        mem_clear_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {COLORS['text_muted']}; "
+            f"font-size: 9px; border: none; border-radius: 3px; padding: 0 4px; }}"
+            f"QPushButton:hover {{ color: {COLORS['accent_red']}; }}"
+        )
+        mem_clear_btn.clicked.connect(self._clear_memory)
+        mem_layout.addWidget(mem_clear_btn)
+
+        layout.addWidget(mem_bar)
+        self._refresh_memory_count()
+
         # ── API Status Footer ─────────────────────
         footer = QWidget()
         footer.setStyleSheet(f"background: {COLORS['bg_secondary']};")
@@ -232,7 +271,7 @@ class SidebarPanel(QWidget):
         self._api_dot.setStyleSheet("background: transparent;")
         f_layout.addWidget(self._api_dot)
 
-        self._api_lbl = QLabel("Grok API")
+        self._api_lbl = QLabel("gpt-oss-120b")
         self._api_lbl.setStyleSheet(
             f"color: {COLORS['text_muted']}; font-size: 11px;"
         )
@@ -269,6 +308,34 @@ class SidebarPanel(QWidget):
     def get_current_mode(self) -> ExecutionMode:
         val = self._mode_combo.currentData()
         return ExecutionMode(val) if val else ExecutionMode.SAFE
+
+    def refresh_memory_count(self):
+        """Call this after any memory save/forget to keep the badge up to date."""
+        self._refresh_memory_count()
+
+    def _refresh_memory_count(self):
+        try:
+            store = get_memory_store()
+            n = store.count()
+            if n == 0:
+                self._mem_lbl.setText("No memories yet")
+            elif n == 1:
+                self._mem_lbl.setText("1 memory stored")
+            else:
+                self._mem_lbl.setText(f"{n} memories stored")
+        except Exception:
+            self._mem_lbl.setText("Memory unavailable")
+
+    def _clear_memory(self):
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self, "Clear All Memories",
+            "This will permanently delete all remembered facts.\n\nAre you sure?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            get_memory_store().clear_all()
+            self._refresh_memory_count()
 
     def _on_session_clicked(self, item: QListWidgetItem):
         session_id = item.data(Qt.ItemDataRole.UserRole)

@@ -19,22 +19,34 @@ from typing import Any, Dict, List, Optional, Union
 from agents.base_agent import BaseAgent
 from models.schemas import AgentType, RiskLevel
 from utils.helpers import (
-    ensure_dir, file_metadata, find_files, find_latest_file,
+    EXTENSION_GROUPS, ensure_dir, file_metadata, find_files, find_latest_file,
     get_desktop_path, get_documents_path, get_downloads_path,
-    human_size, safe_filename, timestamped_filename,
+    human_size, safe_filename, smart_find_file, timestamped_filename,
 )
 from utils.logger import get_logger
 
 logger = get_logger("agents.file", "file")
 
 
-# Common search shorthand directories
+# Common search shorthand directories — includes natural-language variants
 DIR_ALIASES = {
-    "desktop": get_desktop_path,
-    "downloads": get_downloads_path,
-    "documents": get_documents_path,
-    "home": Path.home,
-    "temp": lambda: Path(os.getenv("TEMP", "/tmp")),
+    # Standard
+    "desktop":          get_desktop_path,
+    "downloads":        get_downloads_path,
+    "documents":        get_documents_path,
+    "home":             Path.home,
+    "temp":             lambda: Path(os.getenv("TEMP", "/tmp")),
+    # Natural-language variants the LLM may produce
+    "my desktop":       get_desktop_path,
+    "my downloads":     get_downloads_path,
+    "my documents":     get_documents_path,
+    "the desktop":      get_desktop_path,
+    "the downloads":    get_downloads_path,
+    "the documents":    get_documents_path,
+    "user desktop":     get_desktop_path,
+    "user downloads":   get_downloads_path,
+    "user home":        Path.home,
+    "~":                Path.home,
 }
 
 
@@ -47,7 +59,10 @@ class FileAgent(BaseAgent):
 
     def _register_tools(self):
         # Primary names (files.*)
-        self.register_tool("files.search",           self.search,           "Search for files by pattern", ["directory", "pattern"])
+        self.register_tool("files.read_pdf",         self.read_pdf,         "Extract full text from a PDF file", ["path"])
+        self.register_tool("file.read_pdf",          self.read_pdf,         "Extract full text from a PDF file", ["path"])
+        self.register_tool("files.smart_find",       self.smart_find,       "Smart multi-location file search (USE THIS for vague references)", ["hint"])
+        self.register_tool("files.search",           self.search,           "Search for files by pattern in a specific directory", ["directory", "pattern"])
         self.register_tool("files.list_recent",      self.list_recent,      "List recently modified files", ["extension"])
         self.register_tool("files.get_metadata",     self.get_metadata,     "Get file metadata", ["path"])
         self.register_tool("files.verify_exists",    self.verify_exists,    "Check if file exists", ["path"])
@@ -62,6 +77,7 @@ class FileAgent(BaseAgent):
         self.register_tool("files.setup_workspace",  self.setup_workspace,  "Create a temp workspace for the session")
 
         # Aliases without trailing 's' — LLM sometimes generates file.* instead of files.*
+        self.register_tool("file.smart_find",        self.smart_find,       "Smart multi-location file search", ["hint"])
         self.register_tool("file.search",            self.search,           "Search for files by pattern", ["directory", "pattern"])
         self.register_tool("file.list_recent",       self.list_recent,      "List recently modified files", ["extension"])
         self.register_tool("file.get_metadata",      self.get_metadata,     "Get file metadata", ["path"])
@@ -75,6 +91,70 @@ class FileAgent(BaseAgent):
     # Search & Discovery
     # ─────────────────────────────────────────
 
+    def smart_find(
+        self,
+        hint: str = "",
+        extensions: List[str] = None,
+        locations: List[str] = None,
+        latest: bool = True,
+        max_results: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        Smart file finder — searches Desktop, Downloads, Documents and any extra
+        locations simultaneously, matching by file type and keyword relevance.
+
+        USE THIS whenever the user says things like:
+        - "the PDF on my Desktop"
+        - "the latest Excel file"
+        - "find the invoice document"
+        - "read the document in my files"
+
+        Args:
+            hint:       Natural language description — e.g. "sales pdf", "invoice excel"
+            extensions: Optional explicit extension filter — e.g. [".pdf"]
+            locations:  Extra directories to search in addition to the defaults
+            latest:     If True, return only the single best match
+            max_results: Max results to return when latest=False
+        """
+        resolved_locs = []
+        for loc in (locations or []):
+            resolved_locs.append(self._resolve_dir(loc))
+
+        results = smart_find_file(
+            hint=hint,
+            extensions=extensions,
+            locations=resolved_locs or None,
+            max_results=max_results,
+        )
+
+        if not results:
+            logger.warning(f"smart_find: no files found for hint='{hint}' ext={extensions}")
+            return {
+                "found": False,
+                "error": (
+                    f"No files found matching '{hint}'. "
+                    "Searched Desktop, Downloads, Documents, and Home. "
+                    "Please check the file exists or provide an exact path."
+                ),
+                "files": [],
+                "path": None,
+            }
+
+        if latest:
+            results = results[:1]
+
+        logger.info(
+            f"smart_find: found {len(results)} file(s) for hint='{hint}' — "
+            f"best: {results[0]['name']}"
+        )
+        return {
+            "found": True,
+            "count": len(results),
+            "hint": hint,
+            "files": results,
+            "path": results[0]["path"],
+        }
+
     def search(
         self,
         directory: str,
@@ -83,18 +163,39 @@ class FileAgent(BaseAgent):
         max_results: int = 20,
         recursive: bool = True,
     ) -> Dict[str, Any]:
-        """Find files matching pattern in directory."""
+        """
+        Find files matching a glob pattern in a specific directory.
+        Automatically falls back to Desktop/Downloads/Documents if nothing found.
+        """
         base = self._resolve_dir(directory)
-        if not base.exists():
-            return {"found": False, "error": f"Directory not found: {base}", "files": []}
 
-        files = find_files(base, pattern, recursive=recursive, max_results=max_results)
+        # Primary search
+        if base.exists():
+            files = find_files(base, pattern, recursive=recursive, max_results=max_results)
+        else:
+            logger.warning(f"search: directory not found — {base}, trying fallback locations")
+            files = []
+
+        # Auto-fallback: search common locations if nothing found in specified dir
+        if not files:
+            fallback_dirs = [
+                get_desktop_path(), get_downloads_path(), get_documents_path(), Path.home()
+            ]
+            for fb_dir in fallback_dirs:
+                if fb_dir == base or not fb_dir.exists():
+                    continue
+                fb_files = find_files(fb_dir, pattern, recursive=False, max_results=max_results)
+                if fb_files:
+                    logger.info(f"search fallback: found {len(fb_files)} file(s) in {fb_dir}")
+                    files.extend(fb_files)
+                    if len(files) >= max_results:
+                        break
 
         if latest and files:
             files = [files[0]]
 
-        results = [file_metadata(f) for f in files]
-        logger.info(f"Found {len(results)} files in {base} matching '{pattern}'")
+        results = [file_metadata(f) for f in files[:max_results]]
+        logger.info(f"search: {len(results)} file(s) in '{base}' matching '{pattern}'")
 
         return {
             "found": len(results) > 0,
@@ -102,7 +203,7 @@ class FileAgent(BaseAgent):
             "directory": str(base),
             "pattern": pattern,
             "files": results,
-            "path": results[0]["path"] if results else None,  # Convenience shortcut
+            "path": results[0]["path"] if results else None,
         }
 
     def list_recent(
@@ -182,6 +283,101 @@ class FileAgent(BaseAgent):
     # ─────────────────────────────────────────
     # Read / Write
     # ─────────────────────────────────────────
+
+    def read_pdf(self, path: str, max_pages: int = 0) -> Dict[str, Any]:
+        """
+        Extract text from a PDF file using the best available Python library.
+        Tries pdfplumber → pypdf → pdfminer automatically — no external tools needed.
+
+        Args:
+            path:      Full path to the PDF file.
+            max_pages: Maximum pages to extract (0 = all pages).
+        """
+        resolved = self._resolve_path(path)
+        if not resolved.exists():
+            raise FileNotFoundError(f"PDF not found: {resolved}")
+        if resolved.suffix.lower() != ".pdf":
+            raise ValueError(f"Not a PDF file: {resolved.name}")
+
+        text = self._extract_pdf_text(resolved, max_pages)
+        pages = text.count("\f") + 1  # form-feed chars separate pages
+
+        logger.info(f"PDF extracted: {resolved.name} — {len(text)} chars, ~{pages} pages")
+        return {
+            "path":       str(resolved),
+            "name":       resolved.name,
+            "text":       text,
+            "char_count": len(text),
+            "page_count": pages,
+            "size_bytes": resolved.stat().st_size,
+        }
+
+    @staticmethod
+    def _extract_pdf_text(path: "Path", max_pages: int) -> str:
+        """Try PDF libraries in order of quality until one succeeds."""
+        # ── 1. pdfplumber (best table/layout-aware extraction) ─────────────
+        try:
+            import pdfplumber
+            pages_text = []
+            with pdfplumber.open(str(path)) as pdf:
+                pages = pdf.pages if not max_pages else pdf.pages[:max_pages]
+                for page in pages:
+                    t = page.extract_text()
+                    if t:
+                        pages_text.append(t)
+            if pages_text:
+                return "\n\n".join(pages_text)
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"pdfplumber failed: {e} — trying pypdf")
+
+        # ── 2. pypdf (fast, pure Python) ────────────────────────────────────
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(str(path))
+            pages = reader.pages if not max_pages else reader.pages[:max_pages]
+            parts = []
+            for page in pages:
+                t = page.extract_text()
+                if t:
+                    parts.append(t)
+            if parts:
+                return "\n\n".join(parts)
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"pypdf failed: {e} — trying pdfminer")
+
+        # ── 3. PyPDF2 (older but widely installed) ──────────────────────────
+        try:
+            import PyPDF2
+            reader = PyPDF2.PdfReader(str(path))
+            pages = reader.pages if not max_pages else reader.pages[:max_pages]
+            parts = [p.extract_text() or "" for p in pages]
+            text = "\n\n".join(p for p in parts if p.strip())
+            if text.strip():
+                return text
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"PyPDF2 failed: {e} — trying pdfminer")
+
+        # ── 4. pdfminer.six (most thorough, slowest) ────────────────────────
+        try:
+            from pdfminer.high_level import extract_text as pdfminer_extract
+            text = pdfminer_extract(str(path), maxpages=max_pages or 0)
+            if text and text.strip():
+                return text
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"pdfminer failed: {e}")
+
+        raise RuntimeError(
+            "Could not extract PDF text. Install pdfplumber or pypdf:\n"
+            "  pip install pdfplumber\n  pip install pypdf"
+        )
 
     def read_text(self, path: str, encoding: str = "utf-8") -> Dict[str, Any]:
         """Read a text file."""
