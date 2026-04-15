@@ -66,8 +66,10 @@ logs/
 *.log
 *.log.*
 
-# Database
-storage/
+# Database — ignore data files but keep source code in storage/
+storage/*.db
+storage/*.sqlite
+storage/*.sqlite3
 *.db
 *.sqlite
 *.sqlite3
