@@ -24,15 +24,18 @@ Your role is to interpret user requests and generate structured execution plans.
 ### excel — Excel Agent
 - excel.open_workbook(path)
 - excel.close_workbook()
-- excel.list_sheets()
+- excel.list_sheets()               → returns {"sheets": ["Sheet1", ...]}
 - excel.read_sheet(sheet_name)
 - excel.get_used_range(sheet_name)
 - excel.read_range(sheet_name, range_ref)
-- excel.compute_summary(sheet_name, columns)
+- excel.compute_summary(sheet_name, columns=[])   → column statistics
+- excel.group_by(sheet_name, group_column, value_column, agg="sum")
+    → USE THIS when user wants totals/sums grouped by a category column
+    → returns {"groups": [{"payment_mode": "Card", "sum_total_amount": 500}, ...], "table_data": [...], "table_headers": [...]}
 - excel.apply_filter(sheet_name, column, condition, value)
 - excel.create_chart(sheet_name, chart_type, data_range, title)
 - excel.add_sheet(sheet_name)
-- excel.write_range(sheet_name, range_ref, data)
+- excel.write_range(sheet_name, start_cell, data)
 - excel.apply_formatting(sheet_name, range_ref, format_type)
 - excel.save_workbook(path, format)
 - excel.export_to_csv(sheet_name, output_path)
@@ -110,11 +113,35 @@ You MUST return valid JSON with this exact schema:
 
 ## Context Template Variables
 - {{step_N.result.path}} — File path returned by step N
-- {{step_N.result.data}} — Data returned by step N
+- {{step_N.result.sheets[0]}} — NOT VALID. Use {{step_N.result.sheets}} for sheet name when there is only one sheet, or hard-code the sheet name if known.
+- {{step_N.result.table_data}} — Table rows returned by excel.group_by
+- {{step_N.result.table_headers}} — Headers returned by excel.group_by
+- {{step_N.result.groups}} — Group rows from excel.group_by
 - {{step_N.result.summary}} — Text summary from step N
 - {{user_email}} — User-provided email address
-- {{current_date}} — Today's date
+- {{current_date}} — Today's date (auto-resolved, format: YYYY-MM-DD)
+- {{current_datetime}} — Timestamp (auto-resolved, format: YYYY-MM-DD_HHMMSS)
 - {{output_dir}} — Default output directory
+
+## CRITICAL RULES for Excel → Word reports
+1. To summarize column X by group Y: use excel.group_by(sheet_name, group_column=Y, value_column=X, agg="sum")
+2. To pass the result table to Word: ALWAYS use the TOOL-NAME key, NOT the step number:
+   - word.insert_table(data="{{excel_group_by.table_data}}", headers="{{excel_group_by.table_headers}}")
+   - This is ALWAYS reliable regardless of step numbering.
+3. NEVER use {{step_N.result.table_data}} for structured data like lists — use the tool-name key instead.
+4. After excel.list_sheets(), hard-code the sheet name in subsequent steps using the literal name (e.g. "Sheet1") OR use {{step_N.result.sheets}} only when you are certain there is one sheet.
+5. Always use {{current_date}} in output filenames, never leave template vars unresolved.
+6. Output file paths: use {{output_dir}} for Desktop, e.g. "{{output_dir}}\\Report_{{current_date}}.docx"
+
+## Stable tool-name context keys (PREFERRED over step numbers for data passing)
+After any tool runs successfully, its result is stored under a key derived from its name:
+- excel.group_by result   → {{excel_group_by.table_data}}, {{excel_group_by.table_headers}}, {{excel_group_by.grand_total}}
+- excel.compute_summary   → {{excel_compute_summary.summary}}
+- excel.read_sheet        → {{excel_read_sheet.rows}}, {{excel_read_sheet.headers}}
+- files.search result     → {{files_search.path}}, {{file_search.path}}
+- word.save_document      → {{word_save_document.path}}
+
+Use these ALWAYS when passing data between different agents (Excel → Word, Excel → Email, etc.)
 """
 
 

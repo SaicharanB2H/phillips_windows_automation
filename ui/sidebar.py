@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from icons.icon_manager import IconButton, get_icon, get_pixmap
 from models.schemas import ExecutionMode, SessionState
 from prompts.planner_prompts import SAMPLE_PROMPTS
 from ui.styles import COLORS
@@ -39,6 +40,7 @@ class SidebarPanel(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self._sessions: dict[str, SessionState] = {}
         self._active_session_id: str | None = None
+        self._session_icon = get_icon("message-circle", size=14, color=COLORS["text_muted"])
         self._setup_ui()
 
     def _setup_ui(self):
@@ -54,8 +56,12 @@ class SidebarPanel(QWidget):
         b_layout.setContentsMargins(16, 0, 16, 0)
         b_layout.setSpacing(10)
 
-        logo = QLabel("🤖")
-        logo.setStyleSheet("font-size: 26px; background: transparent;")
+        # SVG bot logo
+        logo = QLabel()
+        logo.setPixmap(get_pixmap("bot", size=26, color=COLORS["accent_blue"]))
+        logo.setFixedSize(30, 30)
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo.setStyleSheet("background: transparent;")
         b_layout.addWidget(logo)
 
         title_col = QVBoxLayout()
@@ -82,9 +88,25 @@ class SidebarPanel(QWidget):
         n_layout = QHBoxLayout(new_btn_wrap)
         n_layout.setContentsMargins(12, 10, 12, 10)
 
-        new_btn = QPushButton("+ New Session")
+        new_btn = IconButton(
+            icon_name="plus",
+            size=15,
+            color="#FFFFFF",
+            hover_color="#FFFFFF",
+            btn_size=None,
+            text="  New Session",
+            parent=new_btn_wrap,
+        )
         new_btn.setObjectName("btn_primary")
         new_btn.setFixedHeight(34)
+        new_btn.setMinimumWidth(160)
+        new_btn.setStyleSheet(
+            f"QPushButton {{ background: {COLORS['accent_blue']}; color: #FFFFFF; "
+            f"font-size: 12px; font-weight: 600; border: none; border-radius: 6px; "
+            f"padding: 0 14px; }}"
+            f"QPushButton:hover {{ background: {COLORS.get('accent_blue_hover', '#388BFD')}; }}"
+            f"QPushButton:pressed {{ background: {COLORS.get('accent_blue_active', '#2563EB')}; }}"
+        )
         new_btn.clicked.connect(self.new_session_requested)
         n_layout.addWidget(new_btn)
         layout.addWidget(new_btn_wrap)
@@ -101,8 +123,10 @@ class SidebarPanel(QWidget):
         self._session_list = QListWidget()
         self._session_list.setStyleSheet(
             f"QListWidget {{ background: {COLORS['bg_secondary']}; border: none; }}"
-            f"QListWidget::item {{ padding: 8px 16px; border-radius: 6px; margin: 1px 6px; }}"
-            f"QListWidget::item:selected {{ background: {COLORS['bg_selected']}; }}"
+            f"QListWidget::item {{ padding: 8px 16px; border-radius: 6px; margin: 1px 6px; "
+            f"color: {COLORS['text_secondary']}; font-size: 12px; }}"
+            f"QListWidget::item:selected {{ background: {COLORS['bg_selected']}; "
+            f"color: {COLORS['text_primary']}; }}"
             f"QListWidget::item:hover {{ background: {COLORS['bg_hover']}; }}"
         )
         self._session_list.setMaximumHeight(160)
@@ -199,8 +223,13 @@ class SidebarPanel(QWidget):
         f_layout.setContentsMargins(12, 6, 12, 8)
         f_layout.setSpacing(6)
 
-        self._api_dot = QLabel("●")
-        self._api_dot.setStyleSheet(f"color: {COLORS['accent_green']}; font-size: 10px;")
+        self._api_dot = QLabel()
+        self._api_dot.setPixmap(
+            get_pixmap("check-circle", size=12, color=COLORS["accent_green"])
+        )
+        self._api_dot.setFixedSize(14, 14)
+        self._api_dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._api_dot.setStyleSheet("background: transparent;")
         f_layout.addWidget(self._api_dot)
 
         self._api_lbl = QLabel("Grok API")
@@ -218,7 +247,7 @@ class SidebarPanel(QWidget):
     def add_session(self, session: SessionState):
         """Add a session entry to the list."""
         self._sessions[session.id] = session
-        item = QListWidgetItem(f"💬  {session.name}")
+        item = QListWidgetItem(self._session_icon, f"  {session.name}")
         item.setData(Qt.ItemDataRole.UserRole, session.id)
         self._session_list.insertItem(0, item)
 
@@ -231,8 +260,9 @@ class SidebarPanel(QWidget):
                 break
 
     def set_api_status(self, connected: bool, label: str = None):
+        icon_name = "check-circle" if connected else "x-circle"
         color = COLORS["accent_green"] if connected else COLORS["accent_red"]
-        self._api_dot.setStyleSheet(f"color: {color}; font-size: 10px;")
+        self._api_dot.setPixmap(get_pixmap(icon_name, size=12, color=color))
         if label:
             self._api_lbl.setText(label)
 

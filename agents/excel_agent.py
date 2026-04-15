@@ -66,6 +66,34 @@ class ExcelAgent(BaseAgent):
         self.register_tool("excel.export_to_csv",   self.export_to_csv,   "Export a sheet to CSV", ["sheet_name", "output_path"])
         self.register_tool("excel.add_sheet",       self.add_sheet,       "Add a new sheet", ["sheet_name"])
         self.register_tool("excel.highlight_rows",  self.highlight_rows,  "Highlight rows matching a condition", ["sheet_name", "column", "condition", "threshold"])
+        self.register_tool("excel.group_by",        self.group_by,        "Group rows by a column and aggregate another column", ["sheet_name", "group_column", "value_column"])
+
+    # ─────────────────────────────────────────
+    # Internal Helpers
+    # ─────────────────────────────────────────
+
+    @staticmethod
+    def _sanitize_sheet_name(sheet_name: str) -> str:
+        """
+        Normalize a sheet name that may have been mangled by template resolution.
+
+        The context manager sometimes resolves {{step_N.result.sheets}} to the
+        string representation of a Python list, e.g. "['Sheet1']" or "['Sheet1', 'Sheet2']".
+        This strips the list brackets and returns only the first sheet name.
+        """
+        s = str(sheet_name).strip()
+        # Detect stringified list: starts with '[' and ends with ']'
+        if s.startswith("[") and s.endswith("]"):
+            # Parse safely — extract all quoted strings inside
+            import re as _re
+            names = _re.findall(r"'([^']*)'|\"([^\"]*)\"", s)
+            flat = [a or b for a, b in names]
+            if flat:
+                logger.warning(
+                    f"Sheet name looked like a list ({s!r}) — using first item: {flat[0]!r}"
+                )
+                return flat[0]
+        return s
 
     # ─────────────────────────────────────────
     # Workbook Management
@@ -74,6 +102,15 @@ class ExcelAgent(BaseAgent):
     def open_workbook(self, path: str) -> Dict[str, Any]:
         """Open an Excel workbook. Tries COM first, then openpyxl."""
         resolved = str(Path(path).expanduser().resolve())
+
+        # Reject Office lock files (e.g. ~$sales.xlsx created while Excel has the file open)
+        if Path(resolved).name.startswith("~$"):
+            raise ValueError(
+                f"Cannot open Office lock file: {Path(resolved).name}\n"
+                "This is a temporary file created by Excel/Word while the real file is open.\n"
+                "Please close the file in Excel first, or use the real file (without the ~$ prefix)."
+            )
+
         if not Path(resolved).exists():
             raise FileNotFoundError(f"Excel file not found: {resolved}")
 
@@ -148,6 +185,7 @@ class ExcelAgent(BaseAgent):
 
     def get_used_range(self, sheet_name: str) -> Dict[str, Any]:
         """Get bounds of used data range in a sheet."""
+        sheet_name = self._sanitize_sheet_name(sheet_name)
         if not self._workbook:
             raise RuntimeError("No workbook open")
         if self._xl_app:
@@ -170,6 +208,7 @@ class ExcelAgent(BaseAgent):
 
     def read_sheet(self, sheet_name: str, max_rows: int = 1000) -> Dict[str, Any]:
         """Read all data from a sheet into a list-of-dicts format."""
+        sheet_name = self._sanitize_sheet_name(sheet_name)
         if not self._workbook:
             raise RuntimeError("No workbook open")
 
@@ -256,8 +295,18 @@ class ExcelAgent(BaseAgent):
         self,
         sheet_name: str,
         numeric_only: bool = True,
+        columns: List[str] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
-        """Compute descriptive statistics for a sheet."""
+        """Compute descriptive statistics for a sheet.
+
+        Args:
+            sheet_name: Name of the sheet to summarize.
+            numeric_only: If True, only include numeric columns.
+            columns: Optional list of columns to include. If omitted, all numeric columns are used.
+            **kwargs: Extra LLM-generated kwargs are silently ignored.
+        """
+        sheet_name = self._sanitize_sheet_name(sheet_name)
         if sheet_name not in self._df_cache:
             self.read_sheet(sheet_name)
 
@@ -265,6 +314,11 @@ class ExcelAgent(BaseAgent):
             raise RuntimeError(f"Could not load data for sheet: {sheet_name}")
 
         df = self._df_cache[sheet_name]
+
+        # Restrict to caller-specified columns if provided
+        if columns:
+            df = df[[c for c in columns if c in df.columns]]
+
         numeric_cols = df.select_dtypes(include="number").columns.tolist()
 
         summary = {}
@@ -290,6 +344,91 @@ class ExcelAgent(BaseAgent):
             "sample_rows": top_rows,
         }
 
+    def group_by(
+        self,
+        sheet_name: str,
+        group_column: str,
+        value_column: str,
+        agg: str = "sum",
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Group rows by one column and aggregate another.
+
+        Example: group_by(sheet_name='Sheet1', group_column='payment_mode',
+                          value_column='total_amount', agg='sum')
+
+        Args:
+            sheet_name:   Sheet to read from.
+            group_column: Column to group by (e.g. 'payment_mode').
+            value_column: Column to aggregate (e.g. 'total_amount').
+            agg:          Aggregation function — 'sum', 'mean', 'count', 'max', 'min'.
+            **kwargs:     Extra LLM kwargs silently ignored.
+        """
+        sheet_name = self._sanitize_sheet_name(sheet_name)
+        if sheet_name not in self._df_cache:
+            self.read_sheet(sheet_name)
+
+        df = self._df_cache.get(sheet_name)
+        if df is None:
+            raise RuntimeError(f"Sheet not loaded: {sheet_name}")
+
+        if group_column not in df.columns:
+            available = list(df.columns)
+            # Try case-insensitive match
+            match = next(
+                (c for c in available if c.lower() == group_column.lower()), None
+            )
+            if match:
+                group_column = match
+            else:
+                raise ValueError(
+                    f"Column '{group_column}' not found. Available: {available}"
+                )
+
+        if value_column not in df.columns:
+            available = list(df.columns)
+            match = next(
+                (c for c in available if c.lower() == value_column.lower()), None
+            )
+            if match:
+                value_column = match
+            else:
+                raise ValueError(
+                    f"Column '{value_column}' not found. Available: {available}"
+                )
+
+        agg_map = {
+            "sum": "sum", "total": "sum",
+            "mean": "mean", "average": "mean", "avg": "mean",
+            "count": "count",
+            "max": "max", "maximum": "max",
+            "min": "min", "minimum": "min",
+        }
+        agg_fn = agg_map.get(agg.lower(), "sum")
+
+        grouped = df.groupby(group_column)[value_column].agg(agg_fn).reset_index()
+        grouped.columns = [group_column, f"{agg_fn}_{value_column}"]
+        # Sort descending by value
+        grouped = grouped.sort_values(f"{agg_fn}_{value_column}", ascending=False)
+
+        rows = grouped.to_dict("records")
+        total = float(grouped[f"{agg_fn}_{value_column}"].sum()) if agg_fn == "sum" else None
+
+        logger.info(
+            f"group_by: {group_column} → {value_column} ({agg_fn}) — {len(rows)} groups"
+        )
+        return {
+            "group_column": group_column,
+            "value_column": value_column,
+            "aggregation": agg_fn,
+            "groups": rows,
+            "group_count": len(rows),
+            "grand_total": total,
+            # Convenience — ready to pass directly to word.insert_table
+            "table_data": rows,
+            "table_headers": [group_column, f"{agg_fn}_{value_column}"],
+        }
+
     def apply_filter(
         self,
         sheet_name: str,
@@ -298,6 +437,7 @@ class ExcelAgent(BaseAgent):
         value: Any = 0,
     ) -> Dict[str, Any]:
         """Filter rows matching a condition. Returns matching rows."""
+        sheet_name = self._sanitize_sheet_name(sheet_name)
         if sheet_name not in self._df_cache:
             self.read_sheet(sheet_name)
         df = self._df_cache[sheet_name]
@@ -327,6 +467,7 @@ class ExcelAgent(BaseAgent):
 
     def add_sheet(self, sheet_name: str) -> Dict[str, Any]:
         """Add a new worksheet."""
+        sheet_name = self._sanitize_sheet_name(sheet_name)
         if not self._workbook:
             raise RuntimeError("No workbook open")
         if self._xl_app:
@@ -343,6 +484,7 @@ class ExcelAgent(BaseAgent):
         data: List[List[Any]],
     ) -> Dict[str, Any]:
         """Write a 2D data array starting at start_cell."""
+        sheet_name = self._sanitize_sheet_name(sheet_name)
         if not self._workbook:
             raise RuntimeError("No workbook open")
         if self._xl_app:
@@ -365,6 +507,7 @@ class ExcelAgent(BaseAgent):
         format_type: str = "bold_header",
     ) -> Dict[str, Any]:
         """Apply basic formatting to a range."""
+        sheet_name = self._sanitize_sheet_name(sheet_name)
         if not self._xl_app:
             return {"status": "skipped", "reason": "COM required for formatting"}
         ws = self._workbook.Sheets(sheet_name)
@@ -393,8 +536,10 @@ class ExcelAgent(BaseAgent):
         condition: str = "gt",
         threshold: float = 0,
         color: str = "yellow",
+
     ) -> Dict[str, Any]:
         """Highlight entire rows where column meets condition."""
+        sheet_name = self._sanitize_sheet_name(sheet_name)
         if not self._xl_app:
             return {"status": "skipped", "reason": "COM required for highlighting"}
 
@@ -505,6 +650,7 @@ class ExcelAgent(BaseAgent):
 
     def export_to_csv(self, sheet_name: str, output_path: str) -> Dict[str, Any]:
         """Export a sheet to CSV using pandas."""
+        sheet_name = self._sanitize_sheet_name(sheet_name)
         if sheet_name not in self._df_cache:
             self.read_sheet(sheet_name)
         df = self._df_cache.get(sheet_name)

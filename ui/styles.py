@@ -539,25 +539,26 @@ def get_agent_color(agent: str) -> str:
 
 
 def get_agent_icon(agent: str) -> str:
-    """Return an emoji icon for each agent."""
+    """Return icon name (for IconManager) per agent — fallback to emoji string."""
     return {
-        "planner":       "🧠",
-        "excel":         "📊",
-        "word":          "📝",
-        "email":         "📧",
-        "file":          "📁",
-        "ui_automation": "🖱️",
-        "orchestrator":  "⚙️",
-    }.get(agent.lower(), "🤖")
+        "planner":       "zap",
+        "excel":         "file-spreadsheet",
+        "word":          "file-text",
+        "email":         "mail",
+        "file":          "folder",
+        "ui_automation": "cpu",
+        "orchestrator":  "layers",
+    }.get(agent.lower(), "bot")
 
 
 def get_status_icon(status: str) -> str:
+    """Return Lucide icon name for a step status."""
     return {
-        "pending":          "⏳",
-        "running":          "▶",
-        "success":          "✓",
-        "failed":           "✗",
-        "skipped":          "⏭",
-        "waiting_approval": "⏸",
-        "cancelled":        "✕",
-    }.get(status, "?")
+        "pending":          "clock",
+        "running":          "loader",
+        "success":          "check-circle",
+        "failed":           "x-circle",
+        "skipped":          "skip-forward",
+        "waiting_approval": "pause",
+        "cancelled":        "x-circle",
+    }.get(status, "clock")

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from icons.icon_manager import IconButton, get_pixmap
 from models.schemas import Message, MessageRole
 from ui.styles import COLORS
 from ui.widgets import ChatBubble, HDivider, LoadingSpinner, SectionLabel, ToastNotification
@@ -124,10 +125,26 @@ class ChatPanel(QWidget):
         )
         h_layout.addWidget(self._status_lbl)
 
-        self._stop_btn = QPushButton("■ Stop")
+        # Stop button with square/stop-circle icon
+        self._stop_btn = IconButton(
+            icon_name="stop-circle",
+            size=14,
+            color=COLORS["accent_red"],
+            hover_color="#FF6B6B",
+            btn_size=None,
+            text="  Stop",
+            parent=header,
+        )
         self._stop_btn.setObjectName("btn_danger")
         self._stop_btn.setFixedSize(72, 28)
         self._stop_btn.setEnabled(False)
+        self._stop_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {COLORS['accent_red']}; "
+            f"font-size: 12px; font-weight: 600; border: 1px solid {COLORS['accent_red']}; "
+            f"border-radius: 5px; padding: 0 8px; }}"
+            f"QPushButton:hover {{ background: rgba(239,68,68,0.12); }}"
+            f"QPushButton:disabled {{ color: {COLORS['text_muted']}; border-color: {COLORS['border']}; }}"
+        )
         self._stop_btn.clicked.connect(self.stop_requested)
         h_layout.addWidget(self._stop_btn)
 
@@ -179,38 +196,72 @@ class ChatPanel(QWidget):
         self._input.files_dropped.connect(self._on_files_dropped)
         input_row.addWidget(self._input, 1)
 
-        # Right-side vertical buttons
-        btn_col = QVBoxLayout()
-        btn_col.setSpacing(6)
-
-        self._send_btn = QPushButton("▶")
+        # Send button — circular, accent blue, send icon
+        self._send_btn = IconButton(
+            icon_name="send",
+            size=18,
+            color="#FFFFFF",
+            hover_color="#FFFFFF",
+            btn_size=40,
+            circular=True,
+            parent=input_area,
+        )
         self._send_btn.setObjectName("send_button")
         self._send_btn.setToolTip("Send (Ctrl+Enter)")
+        self._send_btn.setStyleSheet(
+            f"QPushButton {{ background: {COLORS['accent_blue']}; border: none; "
+            f"border-radius: 20px; }}"
+            f"QPushButton:hover {{ background: {COLORS.get('accent_blue_hover', '#388BFD')}; }}"
+            f"QPushButton:pressed {{ background: {COLORS.get('accent_blue_active', '#2563EB')}; }}"
+            f"QPushButton:disabled {{ background: {COLORS['bg_tertiary']}; }}"
+        )
         self._send_btn.clicked.connect(self._send)
-        btn_col.addWidget(self._send_btn)
-        btn_col.addStretch()
+        input_row.addWidget(self._send_btn)
 
-        input_row.addLayout(btn_col)
         i_layout.addLayout(input_row)
 
         # Bottom toolbar
         toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
+        toolbar.setSpacing(4)
 
-        attach_btn = QPushButton("📎 Attach")
+        # Attach button
+        attach_btn = IconButton(
+            icon_name="paperclip",
+            size=13,
+            color=COLORS["text_secondary"],
+            hover_color=COLORS["text_primary"],
+            btn_size=None,
+            text="  Attach",
+            parent=input_area,
+        )
         attach_btn.setObjectName("btn_icon")
         attach_btn.setFixedHeight(26)
         attach_btn.setStyleSheet(
-            f"color: {COLORS['text_secondary']}; font-size: 11px; padding: 2px 10px;"
+            f"QPushButton {{ background: transparent; color: {COLORS['text_secondary']}; "
+            f"font-size: 11px; border: none; border-radius: 4px; padding: 2px 8px; }}"
+            f"QPushButton:hover {{ background: {COLORS['bg_hover']}; "
+            f"color: {COLORS['text_primary']}; }}"
         )
         attach_btn.clicked.connect(self._pick_files)
         toolbar.addWidget(attach_btn)
 
-        plan_btn = QPushButton("📋 Preview Plan")
+        # Preview Plan button
+        plan_btn = IconButton(
+            icon_name="layers",
+            size=13,
+            color=COLORS["text_secondary"],
+            hover_color=COLORS["text_primary"],
+            btn_size=None,
+            text="  Preview Plan",
+            parent=input_area,
+        )
         plan_btn.setObjectName("btn_icon")
         plan_btn.setFixedHeight(26)
         plan_btn.setStyleSheet(
-            f"color: {COLORS['text_secondary']}; font-size: 11px; padding: 2px 10px;"
+            f"QPushButton {{ background: transparent; color: {COLORS['text_secondary']}; "
+            f"font-size: 11px; border: none; border-radius: 4px; padding: 2px 8px; }}"
+            f"QPushButton:hover {{ background: {COLORS['bg_hover']}; "
+            f"color: {COLORS['text_primary']}; }}"
         )
         plan_btn.clicked.connect(self.plan_preview_requested)
         toolbar.addWidget(plan_btn)
@@ -355,11 +406,19 @@ class ChatPanel(QWidget):
             c_layout = QHBoxLayout(chip)
             c_layout.setContentsMargins(8, 3, 8, 3)
             c_layout.setSpacing(4)
+
+            # File icon for chip
+            file_icon_lbl = QLabel()
+            file_icon_lbl.setPixmap(get_pixmap("paperclip", size=11, color=COLORS["text_muted"]))
+            file_icon_lbl.setStyleSheet("background: transparent;")
+            c_layout.addWidget(file_icon_lbl)
+
             name_lbl = QLabel(name)
             name_lbl.setStyleSheet(
                 f"color: {COLORS['text_secondary']}; font-size: 11px;"
             )
             c_layout.addWidget(name_lbl)
+
             rm_btn = QPushButton("×")
             rm_btn.setFixedSize(14, 14)
             rm_btn.setStyleSheet(
@@ -380,21 +439,37 @@ class ChatPanel(QWidget):
     # ─────────────────────────────────────────
 
     def _add_welcome(self):
-        welcome = QLabel(
-            "👋  Welcome to Desktop Automation Agent\n\n"
+        welcome_widget = QWidget()
+        welcome_widget.setStyleSheet("background: transparent;")
+        wv = QVBoxLayout(welcome_widget)
+        wv.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        wv.setContentsMargins(32, 32, 32, 32)
+        wv.setSpacing(12)
+
+        # Bot icon centered
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(get_pixmap("bot", size=40, color=COLORS["accent_blue"]))
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_lbl.setStyleSheet("background: transparent;")
+        wv.addWidget(icon_lbl)
+
+        welcome_lbl = QLabel(
+            "Welcome to Desktop Automation Agent\n\n"
             "Type a request below or choose a Quick Prompt from the sidebar.\n\n"
             "Examples:\n"
             "• Summarize the latest sales Excel and create a Word report\n"
             "• Find overdue invoices and email a summary to the team\n"
             "• Rewrite the introduction of report.docx professionally"
         )
-        welcome.setWordWrap(True)
-        welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        welcome.setStyleSheet(
+        welcome_lbl.setWordWrap(True)
+        welcome_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        welcome_lbl.setStyleSheet(
             f"color: {COLORS['text_muted']}; font-size: 13px; "
-            f"padding: 32px; line-height: 1.7;"
+            f"padding: 0; line-height: 1.7;"
         )
-        self._msg_layout.insertWidget(0, welcome)
+        wv.addWidget(welcome_lbl)
+
+        self._msg_layout.insertWidget(0, welcome_widget)
 
     def _scroll_to_bottom(self):
         sb = self._scroll.verticalScrollBar()

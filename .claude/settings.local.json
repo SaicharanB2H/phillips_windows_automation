@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find D:/phillips -type d -name \"__pycache__\" -exec rm -rf {} +)",
+      "Bash(python -c ':*)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'D:/phillips'\\); import ui.sidebar; print\\('sidebar OK'\\); import ui.chat_panel; print\\('chat_panel OK'\\); import ui.execution_panel; print\\('execution_panel OK'\\); import ui.log_panel; print\\('log_panel OK'\\); import ui.widgets; print\\('widgets OK'\\); print\\('ALL OK'\\)\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'D:/phillips'\\); from icons.icon_manager import IconButton; b=IconButton\\(icon_name='plus',size=15,color='#FFF',hover_color='#FFF',btn_size=None,text='  New Session'\\); print\\('OK btn_size=None'\\); b2=IconButton\\(icon_name='send',size=18,color='#FFF',btn_size=40,circular=True\\); print\\('OK btn_size=40'\\); print\\('ALL PASS'\\)\")",
+      "Bash(python D:/phillips/main.py --no-gui)"
+    ]
+  }
+}

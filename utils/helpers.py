@@ -70,12 +70,25 @@ def find_files(
     recursive: bool = True,
     max_results: int = 50,
 ) -> List[Path]:
-    """Find files matching a glob pattern, sorted by modification time (newest first)."""
+    """Find files matching a glob pattern, sorted by modification time (newest first).
+
+    Automatically excludes Windows Office temporary lock files (prefixed with ~$)
+    and other common temporary file patterns that should never be opened.
+    """
+    # Prefixes/suffixes that indicate a temp/lock file — never include these
+    _TEMP_PREFIXES = ("~$",)
+    _TEMP_SUFFIXES = (".tmp", ".~lock.")
+
     base = Path(directory)
     if not base.exists():
         return []
     glob_fn = base.rglob if recursive else base.glob
-    files = [f for f in glob_fn(pattern) if f.is_file()]
+    files = [
+        f for f in glob_fn(pattern)
+        if f.is_file()
+        and not any(f.name.startswith(p) for p in _TEMP_PREFIXES)
+        and not any(f.name.endswith(s) for s in _TEMP_SUFFIXES)
+    ]
     files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
     return files[:max_results]
 

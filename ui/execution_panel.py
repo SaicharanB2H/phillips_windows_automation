@@ -10,6 +10,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 
+from icons.icon_manager import get_icon
 from models.schemas import Artifact, ExecutionPlan, PlanStep
 from ui.artifact_panel import ArtifactPanel
 from ui.log_panel import LogPanel
@@ -34,23 +35,30 @@ class ExecutionPanel(QTabWidget):
         self._setup_tabs()
 
     def _setup_tabs(self):
+        _icon_size = 14
+        _icon_color = COLORS.get("text_secondary", "#A0A0B0")
+
         # ── Tab 1: Plan ──────────────────────────
         self._plan_viewer = PlanViewer()
         self._plan_viewer.retry_step_requested.connect(self.retry_step_requested)
-        self.addTab(self._plan_viewer, "📋  Plan")
+        self.addTab(self._plan_viewer, "  Plan")
+        self.setTabIcon(0, get_icon("layers", size=_icon_size, color=_icon_color))
 
         # ── Tab 2: Agents ─────────────────────────
         self._agents_tab = AgentsStatusTab()
-        self.addTab(self._agents_tab, "🤖  Agents")
+        self.addTab(self._agents_tab, "  Agents")
+        self.setTabIcon(1, get_icon("cpu", size=_icon_size, color=_icon_color))
 
         # ── Tab 3: Artifacts ──────────────────────
         self._artifact_panel = ArtifactPanel()
         self._artifact_panel.artifact_opened.connect(self.artifact_opened)
-        self.addTab(self._artifact_panel, "📁  Files")
+        self.addTab(self._artifact_panel, "  Files")
+        self.setTabIcon(2, get_icon("folder", size=_icon_size, color=_icon_color))
 
         # ── Tab 4: Log ────────────────────────────
         self._log_panel = LogPanel()
-        self.addTab(self._log_panel, "📜  Log")
+        self.addTab(self._log_panel, "  Log")
+        self.setTabIcon(3, get_icon("terminal", size=_icon_size, color=_icon_color))
 
     # ─────────────────────────────────────────
     # Public API called by MainWindow
@@ -115,7 +123,7 @@ class AgentsStatusTab(QWidget):
         layout.addStretch()
 
         # Legend
-        legend_lbl = SectionLabel("● Active  ○ Idle")
+        legend_lbl = SectionLabel("Active / Idle indicator")
         layout.addWidget(legend_lbl)
 
     def set_agent_active(self, agent: str, active: bool):

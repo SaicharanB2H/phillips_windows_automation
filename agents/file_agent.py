@@ -275,7 +275,10 @@ class FileAgent(BaseAgent):
         if not resolved.exists():
             return {"exists": False, "files": []}
 
+        _TEMP_PREFIXES = ("~$",)
         items = sorted(resolved.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+        # Exclude Office lock files (e.g. ~$sales.xlsx) and temp files
+        items = [i for i in items if not any(i.name.startswith(p) for p in _TEMP_PREFIXES)]
         if extension_filter:
             items = [i for i in items if i.suffix.lower() == extension_filter.lower()]
 

@@ -1,23 +1,24 @@
 """
 Custom reusable PySide6 widgets for the Desktop Automation Agent UI.
-Includes chat bubbles, step cards, agent badges, toast notifications, etc.
+All icons use the centralized IconManager (Lucide SVG system).
 """
 from __future__ import annotations
 
-import textwrap
-from typing import Optional
-
 from PySide6.QtCore import (
-    QEasingCurve, QPropertyAnimation, QRect, QSize,
+    QEasingCurve, QPropertyAnimation, QSize,
     QTimer, Qt, Signal,
 )
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QTextCursor
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
-    QPushButton, QScrollArea, QSizePolicy, QTextEdit, QVBoxLayout,
-    QWidget,
+    QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
+from icons.icon_manager import (
+    IconButton, StatusIcon, get_icon, get_pixmap,
+    ICON_COLOR_DEFAULT, ICON_COLOR_HOVER, ICON_COLOR_SUCCESS,
+    ICON_COLOR_ERROR, ICON_COLOR_WARNING, ICON_COLOR_MUTED,
+)
 from ui.styles import COLORS, get_agent_color, get_agent_icon, get_status_color, get_status_icon
 
 
@@ -80,20 +81,23 @@ class ChatBubble(QFrame):
         layout.setContentsMargins(0, 4, 0, 4)
         layout.setSpacing(4)
 
-        # Row layout: avatar + bubble
         row = QHBoxLayout()
         row.setSpacing(10)
 
         if is_user:
             row.addStretch()
 
-        # Avatar
-        avatar = QLabel("👤" if is_user else "🤖")
+        # Avatar using SVG icon
+        avatar = QLabel()
         avatar.setFixedSize(32, 32)
         avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         avatar.setStyleSheet(
-            f"background: {COLORS['bg_tertiary']}; border-radius: 16px; font-size: 16px;"
+            f"background: {COLORS['bg_tertiary']}; border-radius: 16px;"
         )
+        icon_name = "bot" if not is_user else "cpu"
+        icon_color = COLORS["accent_blue"] if not is_user else COLORS["text_secondary"]
+        px = get_pixmap(icon_name, 16, icon_color)
+        avatar.setPixmap(px)
 
         # Bubble frame
         bubble = QFrame()
@@ -103,7 +107,6 @@ class ChatBubble(QFrame):
         b_layout.setContentsMargins(14, 10, 14, 10)
         b_layout.setSpacing(6)
 
-        # Content label (renders markdown-like formatting)
         text_lbl = QLabel()
         text_lbl.setWordWrap(True)
         text_lbl.setTextFormat(Qt.TextFormat.RichText)
@@ -115,7 +118,7 @@ class ChatBubble(QFrame):
         text_lbl.setOpenExternalLinks(False)
         b_layout.addWidget(text_lbl)
 
-        # Bottom row: timestamp + copy
+        # Bottom row: timestamp + copy icon button
         meta_row = QHBoxLayout()
         meta_row.setSpacing(6)
         if timestamp:
@@ -126,12 +129,10 @@ class ChatBubble(QFrame):
             meta_row.addWidget(ts_lbl)
         meta_row.addStretch()
 
-        copy_btn = QPushButton("Copy")
-        copy_btn.setObjectName("btn_icon")
-        copy_btn.setFixedHeight(20)
-        copy_btn.setStyleSheet(
-            f"color: {COLORS['text_muted']}; font-size: 10px; background: transparent; border: none;"
-            f"padding: 0 4px;"
+        copy_btn = IconButton(
+            "copy", size=13, color=COLORS["text_muted"],
+            hover_color=ICON_COLOR_HOVER, btn_size=22,
+            tooltip="Copy message", circular=False,
         )
         copy_btn.clicked.connect(lambda: self.copy_requested.emit(content))
         meta_row.addWidget(copy_btn)
@@ -151,17 +152,14 @@ class ChatBubble(QFrame):
         """Convert simple markdown to HTML for display."""
         import re
         text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        # Bold
         text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-        # Bullet points
         lines = text.split("\n")
         html_lines = []
         for line in lines:
             if line.startswith("• ") or line.startswith("- "):
                 line = f"&nbsp;&nbsp;{line}"
             html_lines.append(line)
-        text = "<br>".join(html_lines)
-        return text
+        return "<br>".join(html_lines)
 
 
 # ─────────────────────────────────────────────
@@ -169,7 +167,7 @@ class ChatBubble(QFrame):
 # ─────────────────────────────────────────────
 
 class StepCard(QFrame):
-    """Displays a single plan step with status, agent badge, and timing."""
+    """Displays a single plan step with status icon, agent badge, and timing."""
 
     retry_requested = Signal(str)   # step_id
 
@@ -188,12 +186,9 @@ class StepCard(QFrame):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(12)
 
-        # Status indicator dot
-        self._status_dot = QLabel("⏳")
-        self._status_dot.setFixedSize(24, 24)
-        self._status_dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status_dot.setStyleSheet("font-size: 14px; background: transparent;")
-        layout.addWidget(self._status_dot)
+        # Status icon (SVG, updates with status)
+        self._status_icon = StatusIcon("pending", size=18)
+        layout.addWidget(self._status_icon)
 
         # Step number
         order_lbl = QLabel(f"{order:02d}")
@@ -222,7 +217,6 @@ class StepCard(QFrame):
         )
         content_col.addWidget(self._desc_lbl)
 
-        # Error label (hidden initially)
         self._error_lbl = QLabel()
         self._error_lbl.setWordWrap(True)
         self._error_lbl.setStyleSheet(
@@ -233,18 +227,32 @@ class StepCard(QFrame):
 
         layout.addLayout(content_col, 1)
 
-        # Right column: agent badge + duration
+        # Right column: agent icon badge + duration
         right_col = QVBoxLayout()
         right_col.setSpacing(4)
         right_col.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        agent_badge = QLabel(f"{get_agent_icon(agent)} {agent.upper()}")
-        agent_badge.setStyleSheet(
-            f"color: {get_agent_color(agent)}; font-size: 10px; "
+        # Agent badge with SVG icon
+        agent_row = QHBoxLayout()
+        agent_row.setSpacing(4)
+        agent_row.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        agent_icon_name = get_agent_icon(agent)
+        agent_color = get_agent_color(agent)
+        agent_px = get_pixmap(agent_icon_name, 12, agent_color)
+        agent_icon_lbl = QLabel()
+        agent_icon_lbl.setPixmap(agent_px)
+        agent_icon_lbl.setFixedSize(14, 14)
+        agent_icon_lbl.setStyleSheet("background: transparent;")
+
+        agent_name_lbl = QLabel(agent.upper())
+        agent_name_lbl.setStyleSheet(
+            f"color: {agent_color}; font-size: 10px; "
             f"font-weight: 700; background: transparent; letter-spacing: 0.5px;"
         )
-        agent_badge.setAlignment(Qt.AlignmentFlag.AlignRight)
-        right_col.addWidget(agent_badge)
+        agent_row.addWidget(agent_icon_lbl)
+        agent_row.addWidget(agent_name_lbl)
+        right_col.addLayout(agent_row)
 
         self._duration_lbl = QLabel("")
         self._duration_lbl.setStyleSheet(
@@ -253,13 +261,16 @@ class StepCard(QFrame):
         self._duration_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
         right_col.addWidget(self._duration_lbl)
 
-        self._retry_btn = QPushButton("Retry")
-        self._retry_btn.setObjectName("btn_icon")
-        self._retry_btn.setFixedHeight(22)
+        self._retry_btn = IconButton(
+            "refresh-cw", size=13, color=COLORS["accent_orange"],
+            hover_color="#E8A020", btn_size=60, circular=False,
+            text=" Retry",
+        )
         self._retry_btn.setStyleSheet(
-            f"color: {COLORS['accent_orange']}; font-size: 10px; "
+            f"QPushButton {{ color: {COLORS['accent_orange']}; font-size: 10px; "
             f"background: transparent; border: 1px solid {COLORS['accent_orange']}; "
-            f"border-radius: 4px; padding: 2px 6px;"
+            f"border-radius: 4px; padding: 2px 6px; }}"
+            f"QPushButton:hover {{ background: rgba(210, 153, 34, 0.15); }}"
         )
         self._retry_btn.clicked.connect(lambda: self.retry_requested.emit(self._step_id))
         self._retry_btn.hide()
@@ -270,22 +281,15 @@ class StepCard(QFrame):
     def set_status(self, status: str, error: str = None, duration_s: float = None):
         """Update the card's visual status."""
         self._status = status
-        icon = get_status_icon(status)
-        color = get_status_color(status)
+        self._status_icon.set_status(status)
 
-        self._status_dot.setText(icon)
-        self._status_dot.setStyleSheet(
-            f"font-size: 14px; color: {color}; background: transparent;"
-        )
-
-        # Update frame border color
         obj_map = {
             "running": "step_card_running",
             "success": "step_card_success",
             "failed":  "step_card_failed",
         }
         self.setObjectName(obj_map.get(status, "step_card"))
-        self.setStyle(self.style())  # Force style refresh
+        self.setStyle(self.style())
 
         if error:
             self._error_lbl.setText(f"Error: {error}")
@@ -300,35 +304,45 @@ class StepCard(QFrame):
 
 
 # ─────────────────────────────────────────────
-# Agent Status Badge (for sidebar/header)
+# Agent Status Badge
 # ─────────────────────────────────────────────
 
 class AgentBadge(QFrame):
-    """Compact badge showing an agent's name and current status."""
+    """Compact badge showing an agent's name, SVG icon, and status dot."""
 
     def __init__(self, agent_name: str, parent=None):
         super().__init__(parent)
         self._agent = agent_name
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setContentsMargins(8, 4, 10, 4)
         layout.setSpacing(6)
 
-        icon = QLabel(get_agent_icon(agent_name))
-        icon.setStyleSheet("background: transparent; font-size: 14px;")
-        layout.addWidget(icon)
+        # SVG agent icon
+        icon_name = get_agent_icon(agent_name)
+        agent_color = get_agent_color(agent_name)
+        icon_lbl = QLabel()
+        icon_lbl.setFixedSize(16, 16)
+        icon_lbl.setPixmap(get_pixmap(icon_name, 14, ICON_COLOR_MUTED))
+        icon_lbl.setStyleSheet("background: transparent;")
+        layout.addWidget(icon_lbl)
+        self._icon_lbl = icon_lbl
 
         name_lbl = QLabel(agent_name.replace("_", " ").title())
         name_lbl.setStyleSheet(
-            f"color: {get_agent_color(agent_name)}; font-size: 11px; "
+            f"color: {ICON_COLOR_MUTED}; font-size: 11px; "
             f"font-weight: 600; background: transparent;"
         )
         layout.addWidget(name_lbl)
+        self._name_lbl = name_lbl
+        self._agent_color = agent_color
 
-        self._status_dot = QLabel("●")
-        self._status_dot.setStyleSheet(
-            f"color: {COLORS['text_muted']}; font-size: 8px; background: transparent;"
+        # Status dot — CSS circle, no emoji
+        self._dot = QLabel()
+        self._dot.setFixedSize(7, 7)
+        self._dot.setStyleSheet(
+            f"background: {COLORS['text_muted']}; border-radius: 3px;"
         )
-        layout.addWidget(self._status_dot)
+        layout.addWidget(self._dot)
 
         self.setStyleSheet(
             f"background: {COLORS['bg_tertiary']}; border-radius: 12px; "
@@ -336,11 +350,16 @@ class AgentBadge(QFrame):
         )
 
     def set_active(self, active: bool):
-        color = get_agent_color(self._agent) if active else COLORS["text_muted"]
-        self._status_dot.setStyleSheet(
-            f"color: {color}; font-size: 8px; background: transparent;"
+        icon_name = get_agent_icon(self._agent)
+        color = self._agent_color if active else ICON_COLOR_MUTED
+        self._icon_lbl.setPixmap(get_pixmap(icon_name, 14, color))
+        self._name_lbl.setStyleSheet(
+            f"color: {color}; font-size: 11px; font-weight: 600; background: transparent;"
         )
-        self._status_dot.setText("●" if active else "○")
+        dot_color = color if active else COLORS["text_muted"]
+        self._dot.setStyleSheet(
+            f"background: {dot_color}; border-radius: 3px;"
+        )
 
 
 # ─────────────────────────────────────────────
@@ -348,7 +367,14 @@ class AgentBadge(QFrame):
 # ─────────────────────────────────────────────
 
 class ToastNotification(QFrame):
-    """Brief pop-up notification that auto-dismisses."""
+    """Brief pop-up notification with SVG icon that auto-dismisses."""
+
+    _ICON_MAP = {
+        "info":    ("info",          ICON_COLOR_HOVER),
+        "success": ("check-circle",  ICON_COLOR_SUCCESS),
+        "warning": ("alert-circle",  ICON_COLOR_WARNING),
+        "error":   ("x-circle",      ICON_COLOR_ERROR),
+    }
 
     def __init__(self, message: str, level: str = "info", parent=None):
         super().__init__(parent)
@@ -357,21 +383,17 @@ class ToastNotification(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedWidth(350)
 
-        colors = {
-            "info":    COLORS["accent_blue"],
-            "success": COLORS["accent_green"],
-            "warning": COLORS["accent_orange"],
-            "error":   COLORS["accent_red"],
-        }
-        icons = {"info": "ℹ", "success": "✓", "warning": "⚠", "error": "✗"}
-        color = colors.get(level, COLORS["accent_blue"])
+        icon_name, color = self._ICON_MAP.get(level, ("info", ICON_COLOR_HOVER))
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(10)
 
-        icon_lbl = QLabel(icons.get(level, "ℹ"))
-        icon_lbl.setStyleSheet(f"color: {color}; font-size: 16px; background: transparent;")
+        # SVG icon
+        icon_lbl = QLabel()
+        icon_lbl.setFixedSize(20, 20)
+        icon_lbl.setPixmap(get_pixmap(icon_name, 18, color))
+        icon_lbl.setStyleSheet("background: transparent;")
         layout.addWidget(icon_lbl)
 
         msg_lbl = QLabel(message)
@@ -388,18 +410,11 @@ class ToastNotification(QFrame):
             f"border-radius: 8px;"
         )
         add_shadow(self, blur=20)
-
         QTimer.singleShot(3500, self.close)
 
     @staticmethod
     def show_toast(parent: QWidget, message: str, level: str = "info"):
-        """Static helper to show a toast anchored to parent's bottom-right."""
         toast = ToastNotification(message, level, parent)
-        if parent:
-            pr = parent.rect()
-            x = pr.right() - toast.width() - 20
-            y = pr.bottom() - 80
-            toast.move(parent.mapToGlobal(toast.pos()) if parent.window() else toast.pos())
         toast.show()
         return toast
 
@@ -409,7 +424,7 @@ class ToastNotification(QFrame):
 # ─────────────────────────────────────────────
 
 class LoadingSpinner(QWidget):
-    """Animated spinning indicator."""
+    """Animated spinning indicator (custom painted arcs)."""
 
     def __init__(self, size: int = 32, color: str = None, parent=None):
         super().__init__(parent)
@@ -420,10 +435,11 @@ class LoadingSpinner(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._rotate)
         self._running = False
+        self.hide()
 
     def start(self):
         self._running = True
-        self._timer.start(30)
+        self._timer.start(28)
         self.show()
 
     def stop(self):
@@ -432,7 +448,7 @@ class LoadingSpinner(QWidget):
         self.hide()
 
     def _rotate(self):
-        self._angle = (self._angle + 12) % 360
+        self._angle = (self._angle + 14) % 360
         self.update()
 
     def paintEvent(self, event):
@@ -451,7 +467,7 @@ class LoadingSpinner(QWidget):
             pen = QPen(color, 2.5)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
-            r = self._size // 2 - 4
+            r = self._size // 2 - 3
             painter.drawLine(0, -r + 4, 0, -r)
         painter.end()
 
@@ -461,10 +477,21 @@ class LoadingSpinner(QWidget):
 # ─────────────────────────────────────────────
 
 class ArtifactCard(QFrame):
-    """Display a generated file artifact with open buttons."""
+    """Display a generated file artifact with SVG type icon and action buttons."""
 
-    open_file_requested    = Signal(str)   # file path
-    open_folder_requested  = Signal(str)   # folder path
+    open_file_requested   = Signal(str)
+    open_folder_requested = Signal(str)
+
+    # Map artifact type → (lucide icon name, color)
+    _TYPE_ICONS: dict[str, tuple[str, str]] = {
+        "excel":  ("file-spreadsheet", COLORS["accent_teal"]),
+        "word":   ("file-text",        COLORS["accent_yellow"]),
+        "pdf":    ("file",             COLORS["accent_red"]),
+        "csv":    ("file-spreadsheet", COLORS["accent_green"]),
+        "image":  ("image",            COLORS["accent_purple"]),
+        "text":   ("file-text",        COLORS["text_secondary"]),
+        "other":  ("file",             COLORS["text_muted"]),
+    }
 
     def __init__(self, name: str, path: str, artifact_type: str,
                  size_str: str = "", description: str = "", parent=None):
@@ -479,15 +506,18 @@ class ArtifactCard(QFrame):
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(10)
 
-        icons = {
-            "excel": "📊", "word": "📝", "pdf": "📄",
-            "csv": "📋", "image": "🖼", "text": "📃", "other": "📎",
-        }
-        icon_lbl = QLabel(icons.get(atype.lower(), "📎"))
-        icon_lbl.setStyleSheet("font-size: 22px; background: transparent;")
-        icon_lbl.setFixedWidth(32)
+        # File type SVG icon
+        icon_name, icon_color = self._TYPE_ICONS.get(
+            atype.lower(), ("file", ICON_COLOR_MUTED)
+        )
+        icon_lbl = QLabel()
+        icon_lbl.setFixedSize(28, 28)
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_lbl.setPixmap(get_pixmap(icon_name, 22, icon_color))
+        icon_lbl.setStyleSheet("background: transparent;")
         layout.addWidget(icon_lbl)
 
+        # File info
         info_col = QVBoxLayout()
         info_col.setSpacing(2)
 
@@ -498,9 +528,7 @@ class ArtifactCard(QFrame):
         )
         info_col.addWidget(name_lbl)
 
-        meta = size_str
-        if description:
-            meta = f"{description}  {size_str}".strip()
+        meta = f"{description}  {size_str}".strip() if description else size_str
         if meta:
             meta_lbl = QLabel(meta)
             meta_lbl.setStyleSheet(
@@ -510,24 +538,35 @@ class ArtifactCard(QFrame):
 
         layout.addLayout(info_col, 1)
 
-        # Buttons
+        # Action buttons
         btn_col = QVBoxLayout()
         btn_col.setSpacing(4)
 
-        open_btn = QPushButton("Open")
-        open_btn.setFixedSize(54, 22)
+        open_btn = IconButton(
+            "external-link", size=13,
+            color=COLORS["accent_blue"], hover_color=ICON_COLOR_HOVER,
+            btn_size=54, circular=False, text=" Open",
+        )
         open_btn.setStyleSheet(
-            f"color: {COLORS['accent_blue']}; font-size: 10px; background: transparent; "
-            f"border: 1px solid {COLORS['accent_blue']}; border-radius: 4px; padding: 0;"
+            f"QPushButton {{ color: {COLORS['accent_blue']}; font-size: 10px; "
+            f"background: transparent; border: 1px solid {COLORS['accent_blue']}; "
+            f"border-radius: 4px; padding: 2px 4px; }}"
+            f"QPushButton:hover {{ background: rgba(56, 139, 253, 0.15); }}"
         )
         open_btn.clicked.connect(lambda: self.open_file_requested.emit(self._path))
         btn_col.addWidget(open_btn)
 
-        folder_btn = QPushButton("Folder")
-        folder_btn.setFixedSize(54, 22)
+        folder_btn = IconButton(
+            "folder", size=13,
+            color=COLORS["text_secondary"], hover_color=ICON_COLOR_HOVER,
+            btn_size=54, circular=False, text=" Folder",
+        )
         folder_btn.setStyleSheet(
-            f"color: {COLORS['text_secondary']}; font-size: 10px; background: transparent; "
-            f"border: 1px solid {COLORS['border']}; border-radius: 4px; padding: 0;"
+            f"QPushButton {{ color: {COLORS['text_secondary']}; font-size: 10px; "
+            f"background: transparent; border: 1px solid {COLORS['border']}; "
+            f"border-radius: 4px; padding: 2px 4px; }}"
+            f"QPushButton:hover {{ background: {COLORS['bg_hover']}; "
+            f"border-color: {COLORS['border_accent']}; }}"
         )
         folder_btn.clicked.connect(lambda: self.open_folder_requested.emit(self._path))
         btn_col.addWidget(folder_btn)

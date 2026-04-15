@@ -415,6 +415,20 @@ class Orchestrator:
                 # Auto-detect artifacts from tool output
                 detected = self._detect_artifacts(result, step)
                 artifacts.extend(detected)
+
+                # ── Tool-name-based context keys ──────────────────────────
+                # Store each successful tool result under a stable key derived
+                # from the tool name so later steps can reference it without
+                # depending on fragile step-number ordering.
+                # e.g. excel.group_by result → context key "excel_group_by"
+                #      used as {{excel_group_by.table_data}} in planner JSON
+                if result.data and isinstance(result.data, dict):
+                    safe_key = tool_call.tool_name.replace(".", "_")
+                    self._context.set(safe_key, result.data)
+                    # Also store under short agent-level key for convenience
+                    # e.g. "excel_last" always points to latest excel tool result
+                    agent_key = f"{step.agent.value}_last"
+                    self._context.set(agent_key, result.data)
             else:
                 step_success = False
                 step_error = result.error

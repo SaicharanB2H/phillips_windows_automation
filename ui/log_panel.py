@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QVBoxLayout, QWidget,
 )
 
+from icons.icon_manager import IconButton
 from ui.styles import COLORS
 from ui.widgets import SectionLabel, HDivider
 from utils.logger import get_signal_bridge, LogEntry
@@ -56,32 +57,55 @@ class LogPanel(QWidget):
             cb.stateChanged.connect(lambda state, l=level: self._toggle_filter(l, state))
             h_layout.addWidget(cb)
 
-        # Controls
-        pause_btn = QPushButton("⏸ Pause")
-        pause_btn.setObjectName("btn_icon")
-        pause_btn.setFixedHeight(24)
-        pause_btn.setStyleSheet(
-            f"color: {COLORS['text_secondary']}; font-size: 11px; padding: 2px 8px;"
+        # Controls — icon buttons
+        _btn_ss = (
+            f"QPushButton {{ background: transparent; color: {COLORS['text_secondary']}; "
+            f"font-size: 11px; border: none; border-radius: 4px; padding: 2px 8px; }}"
+            f"QPushButton:hover {{ background: {COLORS['bg_hover']}; "
+            f"color: {COLORS['text_primary']}; }}"
+            f"QPushButton:checked {{ color: {COLORS['accent_blue']}; }}"
         )
-        pause_btn.setCheckable(True)
-        pause_btn.toggled.connect(self._toggle_pause)
-        h_layout.addWidget(pause_btn)
 
-        clear_btn = QPushButton("✕ Clear")
+        self._pause_btn = IconButton(
+            icon_name="pause",
+            size=12,
+            color=COLORS["text_secondary"],
+            hover_color=COLORS["text_primary"],
+            btn_size=None,
+            text="  Pause",
+        )
+        self._pause_btn.setObjectName("btn_icon")
+        self._pause_btn.setFixedHeight(24)
+        self._pause_btn.setCheckable(True)
+        self._pause_btn.setStyleSheet(_btn_ss)
+        self._pause_btn.toggled.connect(self._toggle_pause)
+        h_layout.addWidget(self._pause_btn)
+
+        clear_btn = IconButton(
+            icon_name="trash",
+            size=12,
+            color=COLORS["text_secondary"],
+            hover_color=COLORS["accent_red"],
+            btn_size=None,
+            text="  Clear",
+        )
         clear_btn.setObjectName("btn_icon")
         clear_btn.setFixedHeight(24)
-        clear_btn.setStyleSheet(
-            f"color: {COLORS['text_secondary']}; font-size: 11px; padding: 2px 8px;"
-        )
+        clear_btn.setStyleSheet(_btn_ss)
         clear_btn.clicked.connect(self.clear)
         h_layout.addWidget(clear_btn)
 
-        copy_btn = QPushButton("⎘ Copy")
+        copy_btn = IconButton(
+            icon_name="copy",
+            size=12,
+            color=COLORS["text_secondary"],
+            hover_color=COLORS["text_primary"],
+            btn_size=None,
+            text="  Copy",
+        )
         copy_btn.setObjectName("btn_icon")
         copy_btn.setFixedHeight(24)
-        copy_btn.setStyleSheet(
-            f"color: {COLORS['text_secondary']}; font-size: 11px; padding: 2px 8px;"
-        )
+        copy_btn.setStyleSheet(_btn_ss)
         copy_btn.clicked.connect(self._copy_all)
         h_layout.addWidget(copy_btn)
 
@@ -165,6 +189,8 @@ class LogPanel(QWidget):
     def _toggle_pause(self, paused: bool):
         self._paused = paused
         self._auto_scroll = not paused
+        # Swap icon to reflect state
+        self._pause_btn.set_icon_name("play" if paused else "pause")
 
     def _toggle_filter(self, level: str, state: int):
         if state:

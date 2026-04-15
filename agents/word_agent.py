@@ -261,21 +261,78 @@ class WordAgent(BaseAgent):
 
     def insert_table(
         self,
-        data: List[Dict[str, Any]],
-        headers: List[str] = None,
+        data: Any,
+        headers: Any = None,
         style: str = "Table Grid",
     ) -> Dict[str, Any]:
-        """Insert a formatted table from list-of-dicts data."""
-        if not data:
-            return {"inserted": "table", "rows": 0}
+        """Insert a formatted table from list-of-dicts data.
+
+        `data` should be a list of dicts, but this method defensively handles:
+        - A Python list of dicts (normal)
+        - A single dict (wraps in list)
+        - A stringified list/dict (e.g. from imperfect template resolution)
+        """
+        # ── Normalize data ──────────────────────────────────────────────
+        if isinstance(data, str):
+            # Try to parse a stringified Python literal or JSON
+            import ast, json
+            cleaned = data.strip()
+            # Wrap bare dict/list of dicts in brackets if needed
+            if cleaned.startswith("{"):
+                cleaned = f"[{cleaned}]"
+            try:
+                data = ast.literal_eval(cleaned)
+            except Exception:
+                try:
+                    data = json.loads(cleaned)
+                except Exception:
+                    logger.warning(f"insert_table: could not parse data string, got: {cleaned[:200]}")
+                    return {"inserted": "table", "rows": 0, "error": "Could not parse data"}
+
+        if isinstance(data, dict):
+            data = [data]
+
+        if not data or not isinstance(data, list):
+            # Raise instead of silently returning — makes failure visible in logs
+            # so the orchestrator can re-plan instead of saving an empty doc.
+            raise ValueError(
+                f"insert_table received empty or invalid data: {repr(data)[:200]}. "
+                "Check that the template variable resolves to a list of dicts."
+            )
+
+        # ── Normalize headers ───────────────────────────────────────────
+        if isinstance(headers, str):
+            # Could be "Payment_Mode, sum_Total_Amount" or "['a', 'b']"
+            import ast
+            h = headers.strip()
+            if h.startswith("["):
+                try:
+                    headers = ast.literal_eval(h)
+                except Exception:
+                    headers = [x.strip().strip("'\"") for x in h.strip("[]").split(",")]
+            else:
+                headers = [x.strip() for x in h.split(",")]
 
         if headers is None:
             headers = list(data[0].keys()) if data else []
 
+        # Ensure all rows are dicts
+        if data and not isinstance(data[0], dict):
+            # Might be list of lists — convert using headers
+            data = [dict(zip(headers, row)) for row in data if isinstance(row, (list, tuple))]
+
         rows_data = [[str(row.get(h, "")) for h in headers] for row in data]
 
         if self._word_app:
-            self._insert_table_com(headers, rows_data, style)
+            try:
+                self._insert_table_com(headers, rows_data, style)
+            except Exception as e:
+                logger.warning(f"COM table insert failed ({e}), falling back to python-docx path")
+                # Save COM doc to disk, reopen with python-docx, insert table, save back
+                if self._doc_path and _DOCX_AVAILABLE:
+                    self._table_via_docx_on_saved_file(headers, rows_data, style)
+                else:
+                    raise
         else:
             self._insert_table_docx(headers, rows_data, style)
 
@@ -288,6 +345,11 @@ class WordAgent(BaseAgent):
 
     def _insert_table_com(self, headers, rows, style):
         doc = self._document
+        # Move cursor to the very end of the document so the table is always
+        # appended after existing content, not inserted at a random position.
+        wdStory = 6  # Word constant: move to end of document
+        self._word_app.Selection.EndKey(Unit=wdStory)
+
         sel = self._word_app.Selection
         total_rows = len(rows) + 1
         total_cols = len(headers)
@@ -296,16 +358,51 @@ class WordAgent(BaseAgent):
             table.Style = style
         except Exception:
             pass
-        table.ApplyStyleHeadingRows = True
+        try:
+            table.ApplyStyleHeadingRows = True
+        except Exception:
+            pass
 
         for c, h in enumerate(headers):
             cell = table.Cell(1, c + 1)
-            cell.Range.Text = h
+            cell.Range.Text = str(h)
             cell.Range.Font.Bold = True
 
         for r, row in enumerate(rows):
             for c, val in enumerate(row):
-                table.Cell(r + 2, c + 1).Range.Text = val
+                table.Cell(r + 2, c + 1).Range.Text = str(val)
+
+    def _table_via_docx_on_saved_file(self, headers, rows, style):
+        """Fallback: save COM doc, add table via python-docx, re-save."""
+        import tempfile, shutil
+        tmp = self._doc_path + ".tmp.docx"
+        try:
+            self._document.SaveAs2(tmp, FileFormat=16)
+            doc = Document(tmp)
+            # Append table
+            table = doc.add_table(rows=1 + len(rows), cols=len(headers))
+            try:
+                table.style = style
+            except Exception:
+                pass
+            hdr_cells = table.rows[0].cells
+            for i, h in enumerate(headers):
+                hdr_cells[i].text = str(h)
+                if hdr_cells[i].paragraphs[0].runs:
+                    hdr_cells[i].paragraphs[0].runs[0].bold = True
+            for r_idx, row in enumerate(rows):
+                cells = table.rows[r_idx + 1].cells
+                for c_idx, val in enumerate(row):
+                    cells[c_idx].text = str(val)
+            doc.save(tmp)
+            shutil.copy2(tmp, self._doc_path)
+            logger.info(f"Table inserted via python-docx fallback into {self._doc_path}")
+        finally:
+            try:
+                import os
+                os.remove(tmp)
+            except Exception:
+                pass
 
     def _insert_table_docx(self, headers, rows, style):
         doc = self._document
