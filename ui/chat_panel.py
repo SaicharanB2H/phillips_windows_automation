@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from PySide6.QtCore import Qt, Signal, QMimeData
+from PySide6.QtCore import Qt, Signal, QMimeData, QThread
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
@@ -31,11 +31,89 @@ from ui.styles import COLORS
 from ui.widgets import ChatBubble, HDivider, LoadingSpinner, SectionLabel, ToastNotification
 
 
+class VoiceInputThread(QThread):
+    result_ready = Signal(str)
+    error_occurred = Signal(str)
+
+    SAMPLE_RATE = 16000
+
+    def __init__(self):
+        super().__init__()
+        self._running = True
+        self._stream = None  # ← keep reference for abort
+
+    def stop(self):
+        self._running = False
+        if self._stream is not None:
+            try:
+                self._stream.abort()  # ← unblocks stream.read() immediately
+            except Exception:
+                pass
+
+    def run(self):
+        try:
+            import sounddevice as sd
+            import numpy as np
+            import speech_recognition as sr
+            import io, wave
+        except ImportError as e:
+            self.error_occurred.emit(f"Missing dependency: {e}")
+            return
+
+        chunk = int(self.SAMPLE_RATE * 0.1)
+        frames = []
+
+        try:
+            with sd.InputStream(
+                samplerate=self.SAMPLE_RATE,
+                channels=1,
+                dtype="int16",
+                blocksize=chunk,
+            ) as stream:
+                self._stream = stream
+                while self._running:
+                    data, _ = stream.read(chunk)
+                    frames.append(data.copy())
+        except Exception as e:
+            self.error_occurred.emit(f"Recording error: {e}")
+            return
+        finally:
+            self._stream = None
+
+        if not frames:
+            self.error_occurred.emit("No audio recorded")
+            return
+
+        try:
+            import numpy as np
+            audio_data = np.concatenate(frames, axis=0)
+
+            wav_buffer = io.BytesIO()
+            with wave.open(wav_buffer, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(self.SAMPLE_RATE)
+                wf.writeframes(audio_data.tobytes())
+            wav_buffer.seek(0)
+
+            recognizer = sr.Recognizer()
+            with sr.AudioFile(wav_buffer) as source:
+                audio = recognizer.record(source)
+
+            text = recognizer.recognize_google(audio)
+            self.result_ready.emit(text)
+
+        except sr.UnknownValueError:
+            self.error_occurred.emit("Could not understand audio — please speak clearly")
+        except sr.RequestError as e:
+            self.error_occurred.emit(f"Google Speech API error: {e}")
+        except Exception as e:
+            self.error_occurred.emit(f"Transcription error: {e}")
 class ChatInput(QTextEdit):
     """Multi-line input that sends on Ctrl+Enter and grows up to max height."""
 
     send_triggered = Signal()
-    files_dropped  = Signal(list)   # list of file paths
+    files_dropped = Signal(list)   # list of file paths
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -77,7 +155,6 @@ class ChatInput(QTextEdit):
         new_h = max(52, min(160, int(doc_height) + 20))
         self.setFixedHeight(new_h)
 
-
 class ChatPanel(QWidget):
     """
     Main chat conversation panel.
@@ -92,6 +169,7 @@ class ChatPanel(QWidget):
         super().__init__(parent)
         self._attachments: List[str] = []
         self._processing = False
+        self._voice_thread: VoiceInputThread | None = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -196,6 +274,28 @@ class ChatPanel(QWidget):
         self._input.files_dropped.connect(self._on_files_dropped)
         input_row.addWidget(self._input, 1)
 
+        # Mic button — toggles voice recording
+        self._mic_btn = IconButton(
+            icon_name="mic",
+            size=18,
+            color=COLORS["text_secondary"],
+            hover_color=COLORS["text_primary"],
+            btn_size=40,
+            circular=True,
+            parent=input_area,
+        )
+        self._mic_btn.setObjectName("mic_button")
+        self._mic_btn.setToolTip("Voice input — click to speak")
+        self._mic_btn.setStyleSheet(
+            f"QPushButton {{ background: {COLORS['bg_tertiary']}; border: none; "
+            f"border-radius: 20px; }}"
+            f"QPushButton:hover {{ background: {COLORS['bg_hover']}; }}"
+            f"QPushButton:pressed {{ background: {COLORS['border']}; }}"
+            f"QPushButton:disabled {{ background: {COLORS['bg_tertiary']}; opacity: 0.4; }}"
+        )
+        self._mic_btn.clicked.connect(self._toggle_voice)
+        input_row.addWidget(self._mic_btn)
+
         # Send button — circular, accent blue, send icon
         self._send_btn = IconButton(
             icon_name="send",
@@ -268,7 +368,7 @@ class ChatPanel(QWidget):
 
         toolbar.addStretch()
 
-        hint_lbl = QLabel("Ctrl+Enter to send  ·  Drag & drop files")
+        hint_lbl = QLabel("Ctrl+Enter to send  ·  Drag & drop files  ·  🎙 Mic to speak")
         hint_lbl.setStyleSheet(
             f"color: {COLORS['text_muted']}; font-size: 10px;"
         )
@@ -340,6 +440,11 @@ class ChatPanel(QWidget):
         self._processing = processing
         self._send_btn.setEnabled(not processing)
         self._stop_btn.setEnabled(processing)
+        # Disable mic while agent is running (allow it when recording is active)
+        if processing and not self._is_recording():
+            self._mic_btn.setEnabled(False)
+        elif not processing:
+            self._mic_btn.setEnabled(True)
         if processing:
             self._spinner.start()
         else:
@@ -433,6 +538,82 @@ class ChatPanel(QWidget):
     def _remove_attachment(self, path: str):
         self._attachments = [p for p in self._attachments if p != path]
         self._refresh_attach_row()
+
+    # ─────────────────────────────────────────
+    # Voice Input
+    # ─────────────────────────────────────────
+
+    # ── Voice methods — all at class level, properly indented ──
+
+    def _is_recording(self) -> bool:
+        return self._voice_thread is not None and self._voice_thread.isRunning()
+
+    def _toggle_voice(self):
+        if self._is_recording():
+            self._stop_voice()
+        else:
+            self._start_voice()
+
+    def _start_voice(self):
+        self._voice_thread = VoiceInputThread()
+        self._voice_thread.result_ready.connect(self._on_voice_result)
+        self._voice_thread.error_occurred.connect(self._on_voice_error)
+        self._voice_thread.finished.connect(self._on_voice_finished)
+        self._voice_thread.start()
+
+        # Visual feedback: turn mic button red while recording
+        self._mic_btn.setStyleSheet(
+            f"QPushButton {{ background: {COLORS['accent_red']}; border: none; "
+            f"border-radius: 20px; }}"
+            f"QPushButton:hover {{ background: #FF6B6B; }}"
+        )
+        self._mic_btn.setToolTip("Recording… click to stop")
+        self._status_lbl.setText("🎙 Recording…")
+
+    def _stop_voice(self):
+        """Signal the thread to stop — do NOT call wait() here (blocks UI)."""
+        if self._voice_thread:
+            self._voice_thread.stop()
+            # Don't wait() — let finished signal handle cleanup
+        self._status_lbl.setText("⏳ Transcribing…")
+        self._reset_mic_ui()
+
+    def _cancel_voice(self):
+        """Discard recording entirely."""
+        if self._voice_thread:
+            self._voice_thread.result_ready.disconnect(self._on_voice_result)
+            self._voice_thread.stop()
+            self._voice_thread = None
+        self._reset_mic_ui()
+        self._status_lbl.setText("Voice input cancelled")
+
+    def _on_voice_result(self, text: str):
+        self._input.setPlainText(text)
+        cursor = self._input.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self._input.setTextCursor(cursor)
+        self._input.setFocus()
+        self._status_lbl.setText("✅ Voice transcribed — press Ctrl+Enter to send")
+
+    def _on_voice_error(self, message: str):
+        ToastNotification.show_toast(self, message, "error")
+        self._status_lbl.setText("❌ Voice failed")
+
+    def _on_voice_finished(self):
+        self._voice_thread = None   # ← clean up here, not in _stop_voice
+        self._reset_mic_ui()
+        if self._status_lbl.text() == "⏳ Transcribing…":
+            self._status_lbl.setText("Ready")
+
+    def _reset_mic_ui(self):
+        self._mic_btn.setToolTip("Voice input — click to speak")
+        self._mic_btn.setStyleSheet(
+            f"QPushButton {{ background: {COLORS['bg_tertiary']}; border: none; "
+            f"border-radius: 20px; }}"
+            f"QPushButton:hover {{ background: {COLORS['bg_hover']}; }}"
+            f"QPushButton:pressed {{ background: {COLORS['border']}; }}"
+            f"QPushButton:disabled {{ background: {COLORS['bg_tertiary']}; opacity: 0.4; }}"
+        )
 
     # ─────────────────────────────────────────
     # Helpers

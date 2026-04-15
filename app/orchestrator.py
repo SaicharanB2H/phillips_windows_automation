@@ -299,13 +299,20 @@ class Orchestrator:
             self.signals.status_update.emit(f"Plan ready: {len(plan.steps)} steps")
 
             # ── Step 2: Execute Steps ────────────────
+            # Use a mutable queue instead of a for-loop so that when re-planning
+            # occurs the remaining steps can be replaced atomically without the
+            # iterator continuing over the old plan's stale step list.
             completed_step_ids: List[str] = []
             overall_success = True
+            step_queue = sorted(plan.steps, key=lambda s: s.order)
 
-            for step in sorted(plan.steps, key=lambda s: s.order):
+            while step_queue:
                 if self._cancelled:
-                    step.status = StepStatus.CANCELLED
+                    for s in step_queue:
+                        s.status = StepStatus.CANCELLED
                     break
+
+                step = step_queue.pop(0)
 
                 # Check dependencies
                 if not self._dependencies_met(step, plan, completed_step_ids):
@@ -360,11 +367,18 @@ class Orchestrator:
                         self.signals.artifact_created.emit(artifact)
                 else:
                     overall_success = False
-                    # Attempt re-planning for failed step
+                    # Attempt re-planning for remaining steps
                     revised = self._try_replan(plan, step, result.error or "Unknown error", completed_step_ids)
                     if revised:
-                        logger.info("Re-planning succeeded — continuing with revised plan")
+                        logger.info("Re-planning succeeded — replacing remaining step queue")
                         plan = revised
+                        # Replace the queue with the new plan's pending steps
+                        # (sorted by order, skipping any already-completed steps)
+                        step_queue = sorted(
+                            [s for s in revised.steps if s.status == StepStatus.PENDING],
+                            key=lambda s: s.order,
+                        )
+                        self.signals.plan_ready.emit(revised)
                     else:
                         logger.warning(f"Step failed and re-planning not possible: {step.title}")
 

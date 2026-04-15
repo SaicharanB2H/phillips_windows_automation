@@ -210,17 +210,41 @@ class ContextManager:
         if key == "documents":
             return str(Path.home() / "Documents")
 
-        # Support dot-notation: "excel_group_by.table_data"
-        # → look up self._store["excel_group_by"]["table_data"]
+        # Support dot-notation with optional bracket index:
+        #   "excel_group_by.table_data"     → store["excel_group_by"]["table_data"]
+        #   "excel_list_sheets.sheets[0]"   → store["excel_list_sheets"]["sheets"][0]
+        #   "excel_list_sheets.sheets"      → store["excel_list_sheets"]["sheets"]
         if "." in key:
             parts = key.split(".", 1)
             root = self._store.get(parts[0])
             if isinstance(root, dict):
-                value = root.get(parts[1])
-                if value is not None:
-                    return value
+                remainder = parts[1]
 
-        return self._store.get(key)
+                # Check for bracket index at the end: field[N]
+                bracket = re.match(r'^([^[]+)\[(\d+)\]$', remainder)
+                if bracket:
+                    field, idx = bracket.group(1), int(bracket.group(2))
+                    lst = root.get(field)
+                    if isinstance(lst, list):
+                        if idx < len(lst):
+                            return lst[idx]
+                        return None
+                    # If it's a scalar wrapped in a list-like context, return it
+                    if lst is not None:
+                        return lst
+                else:
+                    value = root.get(remainder)
+                    if value is not None:
+                        # Unwrap single-element lists automatically
+                        if isinstance(value, list) and len(value) == 1:
+                            return value[0]
+                        return value
+
+        # Plain key lookup (with single-element list unwrapping)
+        value = self._store.get(key)
+        if isinstance(value, list) and len(value) == 1:
+            return value[0]
+        return value
 
     def _nested_get(self, data: Any, keys: List[str]) -> Any:
         """Get a nested value from a dict/list using a list of key/index segments."""

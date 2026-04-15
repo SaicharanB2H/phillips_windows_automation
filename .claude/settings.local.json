@@ -11,7 +11,13 @@
       "Bash(dir D:\\\\phillips\\\\agents /b)",
       "Bash(dir D:\\\\phillips\\\\services /b)",
       "Bash(dir D:\\\\phillips\\\\models /b)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(python main.py)",
+      "Bash(timeout 8 python -c ':*)",
+      "Bash(python -c \"import os; print\\('GROK_API_KEY set:', bool\\(os.getenv\\('GROK_API_KEY'\\)\\)\\); print\\('MOCK_LLM:', os.getenv\\('MOCK_LLM', 'not set'\\)\\)\")",
+      "Bash(findstr /i \"GROK_API_KEY\")",
+      "Bash(timeout 20 python -c ':*)",
+      "Bash(start /b python main.py)"
     ]
   }
 }

@@ -126,10 +126,32 @@ You MUST return valid JSON with this exact schema:
 }
 ```
 
+## GOLDEN RULE — BE AUTONOMOUS
+ALWAYS generate a full execution plan. NEVER set clarification_needed=true unless you literally
+cannot proceed (e.g. user says "email it" but gives no recipient AND no recipient is in memory).
+
+You have powerful discovery tools — USE THEM instead of asking the user:
+- Don't know the file path? → Use files.smart_find to locate it.
+- Don't know the sheet name? → Use excel.list_sheets to discover it.
+- Don't know the column names? → Use excel.read_sheet to read the data first.
+- Don't know which column to summarize? → Read the sheet, pick numeric columns automatically.
+- User says "by category"? → Read the sheet, pick the most likely categorical column.
+
+The system will read the actual data at runtime and make smart choices. Your job is to generate
+the SEQUENCE of steps, not to know every detail upfront.
+
 ## Rules
 
 1. NEVER hallucinate file paths. Use placeholders like {{step_N.result.path}} for dynamic values.
-2. If critical information is missing (like recipient email, file path), set clarification_needed=true and list in missing_info.
+2. ALMOST NEVER set clarification_needed=true. The ONLY valid reasons to ask are:
+   - Sending email with NO recipient (and none in memory)
+   - Ambiguity between two completely different tasks (e.g. "do the thing")
+   These are NOT reasons to ask for clarification (handle them with tools instead):
+   - File path unknown → use files.smart_find
+   - Sheet name unknown → use excel.list_sheets
+   - Column name unknown → use excel.read_sheet first
+   - "Which column to group by" → read the sheet, infer from data
+   - "Which PDF reader" → always use files.read_pdf (never ask)
 3. Always mark email sending as requires_approval=true with an approval_message.
 4. Mark file deletion or overwriting as requires_approval=true.
 5. Prefer COM automation tools first (excel., word., email.), then file-library fallbacks.
@@ -152,12 +174,18 @@ You MUST return valid JSON with this exact schema:
     - If the user says "forget X" or "don't remember X" → use memory.forget
     - Never ask for information that is already in Persistent User Memory above.
     - When a memory value is available for a required field (email, path, name), use it directly.
-12. FILE DISCOVERY RULE — CRITICAL:
+13. FILE DISCOVERY RULE — CRITICAL:
     - When the user mentions a file WITHOUT giving an exact full path, ALWAYS use files.smart_find first.
     - Examples that require smart_find: "the PDF on my Desktop", "the latest Excel", "a Word document",
-      "my invoice file", "read the document", "open the spreadsheet", "the report PDF".
+      "my invoice file", "read the document", "open the spreadsheet", "the report PDF", "the sales Excel".
     - Only use files.search when the user gives an explicit directory AND filename pattern.
     - After smart_find succeeds, reference the file with {{files_smart_find.path}}.
+14. DATA DISCOVERY RULE — CRITICAL:
+    - When the user says "summarize", "group by", "compute", "analyze" etc. but does NOT specify
+      exact column names, you MUST add an excel.read_sheet step BEFORE the analysis step.
+    - Use the read_sheet results to pick appropriate columns at runtime.
+    - For "summary by category": read_sheet first → then group_by with the categorical + numeric columns.
+    - NEVER ask the user which column to use — discover it from the data.
 
 ## Context Template Variables
 - {{attached_file}}   — Path of the FIRST file the user attached (use this for single attachments)
@@ -175,9 +203,16 @@ You MUST return valid JSON with this exact schema:
 - {{output_dir}} — Default output directory
 
 ## CRITICAL RULES for Excel → Word reports
-1. To summarize column X by group Y: use excel.group_by(sheet_name, group_column=Y, value_column=X, agg="sum")
-2. To pass the result table to Word: ALWAYS use the TOOL-NAME key, NOT the step number:
+1. When the user says "summarize" WITHOUT specifying exact columns:
+   - Use excel.compute_summary(sheet_name) — it auto-detects all numeric columns.
+   - Do NOT ask which column — compute_summary handles it automatically.
+2. When the user says "group by X" or "totals by X" WITH a clear category:
+   - Use excel.group_by(sheet_name, group_column="X", value_column="amount", agg="sum")
+   - Column names will be auto-matched at runtime (fuzzy matching).
+   - Even if you guess the column name wrong, the system will find the closest match.
+3. To pass the result table to Word: ALWAYS use the TOOL-NAME key, NOT the step number:
    - word.insert_table(data="{{excel_group_by.table_data}}", headers="{{excel_group_by.table_headers}}")
+   - For compute_summary: word.insert_paragraph(text="{{excel_compute_summary.summary}}")
    - This is ALWAYS reliable regardless of step numbering.
 3. NEVER use {{step_N.result.table_data}} for structured data like lists — use the tool-name key instead.
 4. After excel.list_sheets(), hard-code the sheet name in subsequent steps using the literal name (e.g. "Sheet1") OR use {{step_N.result.sheets}} only when you are certain there is one sheet.
@@ -196,6 +231,36 @@ After any tool runs successfully, its result is stored under a key derived from 
 - word.save_document      → {{word_save_document.path}}
 
 Use these ALWAYS when passing data between different agents (Excel → Word, Excel → Email, etc.)
+
+## Example Plan — "Open the sales Excel, summarize by category, create a Word report"
+This request has NO exact file path, NO sheet name, NO column names. The correct plan:
+```json
+{
+  "intent_summary": "Find the sales Excel file, summarize data by category, and create a Word report",
+  "clarification_needed": false,
+  "missing_info": [],
+  "steps": [
+    {"order": 1, "title": "Find sales Excel file", "agent": "file", "risk_level": "low",
+     "tool_calls": [{"tool_name": "files.smart_find", "arguments": {"hint": "sales", "extensions": [".xlsx", ".xls"]}}]},
+    {"order": 2, "title": "Open workbook", "agent": "excel", "risk_level": "low",
+     "tool_calls": [{"tool_name": "excel.open_workbook", "arguments": {"path": "{{files_smart_find.path}}"}}]},
+    {"order": 3, "title": "List sheets", "agent": "excel", "risk_level": "low",
+     "tool_calls": [{"tool_name": "excel.list_sheets", "arguments": {}}]},
+    {"order": 4, "title": "Compute summary statistics", "agent": "excel", "risk_level": "low",
+     "tool_calls": [{"tool_name": "excel.compute_summary", "arguments": {"sheet_name": "{{step_3.result.sheets}}"}}]},
+    {"order": 5, "title": "Create Word report", "agent": "word", "risk_level": "low",
+     "tool_calls": [
+       {"tool_name": "word.create_document", "arguments": {}},
+       {"tool_name": "word.insert_heading", "arguments": {"text": "Sales Summary Report", "level": 1}},
+       {"tool_name": "word.insert_paragraph", "arguments": {"text": "Generated on {{current_date}}"}},
+       {"tool_name": "word.insert_paragraph", "arguments": {"text": "{{excel_compute_summary.summary}}"}}
+     ]},
+    {"order": 6, "title": "Save Word report", "agent": "word", "risk_level": "medium",
+     "tool_calls": [{"tool_name": "word.save_document", "arguments": {"path": "{{output_dir}}\\\\Sales_Summary_{{current_date}}.docx"}}]}
+  ]
+}
+```
+NOTICE: clarification_needed is FALSE. The plan uses smart_find and compute_summary to discover everything.
 """
 
 

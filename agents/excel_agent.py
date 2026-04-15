@@ -95,6 +95,76 @@ class ExcelAgent(BaseAgent):
                 return flat[0]
         return s
 
+    @staticmethod
+    def _resolve_column(df, col_name: str, prefer: str = "any") -> str:
+        """
+        Smart column resolution: exact → case-insensitive → substring → auto-detect.
+
+        Parameters
+        ----------
+        df        : pandas DataFrame
+        col_name  : The column name the planner guessed (may be vague like "category").
+        prefer    : "numeric" — prefer a numeric column if auto-detecting.
+                    "categorical" — prefer a string/object column if auto-detecting.
+                    "any" — no preference.
+
+        Returns the best-matching real column name, or raises ValueError.
+        """
+        import pandas as _pd
+
+        available = list(df.columns)
+        if not available:
+            raise ValueError("DataFrame has no columns")
+
+        # 1. Exact match
+        if col_name in available:
+            return col_name
+
+        # 2. Case-insensitive exact match
+        low = col_name.lower().replace(" ", "_")
+        for c in available:
+            if c.lower().replace(" ", "_") == low:
+                logger.info(f"Column '{col_name}' matched case-insensitively to '{c}'")
+                return c
+
+        # 3. Substring / keyword match (e.g. "category" matches "product_category")
+        for c in available:
+            cl = c.lower().replace("_", " ")
+            if low.replace("_", " ") in cl or cl in low.replace("_", " "):
+                logger.info(f"Column '{col_name}' matched via substring to '{c}'")
+                return c
+
+        # 4. Auto-detect based on preference
+        # Separate numeric and non-numeric columns
+        numeric_cols = [c for c in available if _pd.api.types.is_numeric_dtype(df[c])]
+        cat_cols = [c for c in available if not _pd.api.types.is_numeric_dtype(df[c])]
+
+        if prefer == "numeric" and numeric_cols:
+            # Pick the first numeric column (skip index-like columns)
+            pick = next(
+                (c for c in numeric_cols
+                 if not any(skip in c.lower() for skip in ("id", "index", "row", "serial", "no", "s.no", "sno"))),
+                numeric_cols[0],
+            )
+            logger.warning(f"Column '{col_name}' not found — auto-selected numeric column '{pick}'")
+            return pick
+
+        if prefer == "categorical" and cat_cols:
+            # Pick the first non-numeric, non-date column
+            pick = next(
+                (c for c in cat_cols
+                 if not any(skip in c.lower() for skip in ("date", "time", "timestamp", "id", "index", "row"))),
+                cat_cols[0],
+            )
+            logger.warning(f"Column '{col_name}' not found — auto-selected categorical column '{pick}'")
+            return pick
+
+        # 5. Nothing matched — raise with helpful message
+        raise ValueError(
+            f"Column '{col_name}' not found and could not auto-detect a match.\n"
+            f"Available columns: {available}"
+        )
+
     # ─────────────────────────────────────────
     # Workbook Management
     # ─────────────────────────────────────────
@@ -372,30 +442,8 @@ class ExcelAgent(BaseAgent):
         if df is None:
             raise RuntimeError(f"Sheet not loaded: {sheet_name}")
 
-        if group_column not in df.columns:
-            available = list(df.columns)
-            # Try case-insensitive match
-            match = next(
-                (c for c in available if c.lower() == group_column.lower()), None
-            )
-            if match:
-                group_column = match
-            else:
-                raise ValueError(
-                    f"Column '{group_column}' not found. Available: {available}"
-                )
-
-        if value_column not in df.columns:
-            available = list(df.columns)
-            match = next(
-                (c for c in available if c.lower() == value_column.lower()), None
-            )
-            if match:
-                value_column = match
-            else:
-                raise ValueError(
-                    f"Column '{value_column}' not found. Available: {available}"
-                )
+        group_column = self._resolve_column(df, group_column, prefer="categorical")
+        value_column = self._resolve_column(df, value_column, prefer="numeric")
 
         agg_map = {
             "sum": "sum", "total": "sum",
