@@ -40,6 +40,10 @@ def _parse_agent(agent_str: str) -> AgentType:
         "ui": AgentType.UI_AUTOMATION,
         "ui_automation": AgentType.UI_AUTOMATION,
         "planner": AgentType.PLANNER,
+        "memory": AgentType.MEMORY,
+        "app_launcher": AgentType.APP_LAUNCHER,
+        "app": AgentType.APP_LAUNCHER,
+        "launcher": AgentType.APP_LAUNCHER,
     }
     return mapping.get(agent_str.lower().strip(), AgentType.FILE)
 

@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
+from agents.app_launcher_agent import AppLauncherAgent
 from agents.excel_agent import ExcelAgent
 from agents.email_agent import EmailAgent
 from agents.file_agent import FileAgent
@@ -125,6 +126,7 @@ class Orchestrator:
         self._file      = FileAgent()
         self._ui_auto   = UIAutomationAgent()
         self._memory    = MemoryAgent()
+        self._launcher  = AppLauncherAgent()
 
         # Agent routing map
         self._agent_map = {
@@ -134,6 +136,7 @@ class Orchestrator:
             AgentType.FILE:          self._file,
             AgentType.UI_AUTOMATION: self._ui_auto,
             AgentType.MEMORY:        self._memory,
+            AgentType.APP_LAUNCHER:  self._launcher,
         }
 
         # Persistent memory store

@@ -17,7 +17,19 @@
       "Bash(python -c \"import os; print\\('GROK_API_KEY set:', bool\\(os.getenv\\('GROK_API_KEY'\\)\\)\\); print\\('MOCK_LLM:', os.getenv\\('MOCK_LLM', 'not set'\\)\\)\")",
       "Bash(findstr /i \"GROK_API_KEY\")",
       "Bash(timeout 20 python -c ':*)",
-      "Bash(start /b python main.py)"
+      "Bash(start /b python main.py)",
+      "Bash(python -c \"import winreg; print\\('winreg ok'\\)\")",
+      "Bash(python -c \"import subprocess; r=subprocess.run\\(['where','notepad'],capture_output=True,text=True\\); print\\(r.stdout.strip\\(\\)\\)\")",
+      "Bash(python -c \"from agents.app_launcher_agent import AppLauncherAgent; a = AppLauncherAgent\\(\\); print\\('OK', list\\(a._tools.keys\\(\\)\\)\\)\")",
+      "Bash(node presentation.js)",
+      "Bash(npm install:*)",
+      "Bash(python scripts/office/soffice.py --headless --convert-to pdf \"C:\\\\Users\\\\saich\\\\Desktop\\\\DesktopAutomationAgent.pptx\")",
+      "Bash(where soffice:*)",
+      "Bash(where libreoffice:*)",
+      "Read(//c/Program Files/LibreOffice/program/**)",
+      "Bash(powershell -Command ':*)",
+      "Bash(rm -f slide-*.jpg)",
+      "Bash(pdftoppm -jpeg -r 150 DesktopAutomationAgent.pdf slide)"
     ]
   }
 }

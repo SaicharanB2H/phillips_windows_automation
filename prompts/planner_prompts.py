@@ -88,6 +88,20 @@ Your role is to interpret user requests and generate structured execution plans.
 - memory.clear()
     → Wipe ALL memories (requires approval)
 
+### app_launcher — App Launcher Agent
+- app.open(name)
+    → Open / launch ANY Windows application by name (natural language).
+    → Examples: app.open("chrome"), app.open("notepad"), app.open("spotify"), app.open("vs code")
+    → Supports hundreds of app names and aliases. Searches PATH, Start Menu, and Program Files.
+    → USE THIS whenever the user says "open X", "launch X", "start X", "run X" for any app.
+    → Returns {"launched": true, "app": "...", "message": "✓ Opened ..."}
+- app.list(filter="")
+    → List installed apps found in the Start Menu (optionally filtered by keyword).
+- app.close(name)
+    → Close / kill a running application.
+- app.is_running(name)
+    → Check if an application is currently running.
+
 ### ui_automation — UI Automation Agent (fallback only)
 - ui.find_window(title_pattern)
 - ui.click(x, y)
