@@ -1,0 +1,43 @@
+# Core UI
+PySide6>=6.6.0
+
+# LLM / API (Grok is OpenAI-compatible)
+openai>=1.30.0
+
+# Data / Validation
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+
+# Windows COM Automation
+pywin32>=306; sys_platform == "win32"
+
+# Excel / Spreadsheet
+openpyxl>=3.1.2
+pandas>=2.1.0
+xlwings>=0.30.0; sys_platform == "win32"
+
+# Word Documents
+python-docx>=1.1.0
+
+# UI Automation fallback
+pyautogui>=0.9.54
+pywinauto>=0.6.8; sys_platform == "win32"
+Pillow>=10.0.0
+
+# Storage
+# sqlite3 is built-in
+
+# Async / Threading
+qasync>=0.27.0
+
+# Utilities
+aiohttp>=3.9.0
+tenacity>=8.2.0
+chardet>=5.2.0
+rich>=13.7.0
+
+# Charts (optional)
+matplotlib>=3.8.0
+
+# PDF (future)
+# reportlab>=4.0.0

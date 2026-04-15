@@ -1,0 +1,1 @@
+"""Core application orchestration layer."""

@@ -1,0 +1,110 @@
+# ============================================================
+# Windows Desktop Automation Agent — .gitignore
+# ============================================================
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+.env/
+virtualenv/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+MANIFEST
+wheels/
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.tox
+.nox/
+nosetests.xml
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+
+# IDEs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Database
+storage/
+*.db
+*.sqlite
+*.sqlite3
+
+# Output directories
+AutoAgent_Output/
+output/
+
+# OS artifacts
+Thumbs.db
+Desktop.ini
+.DS_Store
+ehthumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
+*.~*
+
+# Screenshots (auto-generated)
+screenshots/
+
+# Compiled UI files (if using Qt Designer)
+*.pyc
+
+# Jupyter notebooks (checkpoints)
+.ipynb_checkpoints/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Rope project settings
+.ropeproject
+
+# pywin32 cache
+*.tlb

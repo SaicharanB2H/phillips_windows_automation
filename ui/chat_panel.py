@@ -1,0 +1,405 @@
+"""
+Chat Panel — the main conversation area.
+
+Features:
+- Scrollable message history with styled bubbles
+- Multi-line input box with Ctrl+Enter to send
+- Drag-and-drop file attachment
+- File picker button
+- Preview plan button
+- Stop execution button
+- Spinner during processing
+"""
+from __future__ import annotations
+
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import List
+
+from PySide6.QtCore import Qt, Signal, QMimeData
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeyEvent
+from PySide6.QtWidgets import (
+    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
+    QPushButton, QScrollArea, QSizePolicy, QTextEdit, QVBoxLayout,
+    QWidget,
+)
+
+from models.schemas import Message, MessageRole
+from ui.styles import COLORS
+from ui.widgets import ChatBubble, HDivider, LoadingSpinner, SectionLabel, ToastNotification
+
+
+class ChatInput(QTextEdit):
+    """Multi-line input that sends on Ctrl+Enter and grows up to max height."""
+
+    send_triggered = Signal()
+    files_dropped  = Signal(list)   # list of file paths
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("chat_input")
+        self.setAcceptDrops(True)
+        self.setPlaceholderText(
+            "Type a request… e.g. 'Open the latest sales Excel, summarize Q1, create a Word report and draft an email to manager@company.com'"
+        )
+        self.setMinimumHeight(52)
+        self.setMaximumHeight(160)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.document().contentsChanged.connect(self._adjust_height)
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and event.modifiers() == Qt.KeyboardModifier.ControlModifier):
+            self.send_triggered.emit()
+            return
+        super().keyPressEvent(event)
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dropEvent(self, event: QDropEvent):
+        urls = event.mimeData().urls()
+        if urls:
+            paths = [u.toLocalFile() for u in urls if u.isLocalFile()]
+            if paths:
+                self.files_dropped.emit(paths)
+                event.acceptProposedAction()
+                return
+        super().dropEvent(event)
+
+    def _adjust_height(self):
+        doc_height = self.document().size().height()
+        new_h = max(52, min(160, int(doc_height) + 20))
+        self.setFixedHeight(new_h)
+
+
+class ChatPanel(QWidget):
+    """
+    Main chat conversation panel.
+    Sends user messages upward via signals; receives responses via slots.
+    """
+
+    message_submitted    = Signal(str, list)  # text, attachment paths
+    stop_requested       = Signal()
+    plan_preview_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._attachments: List[str] = []
+        self._processing = False
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # ── Header ───────────────────────────────
+        header = QFrame()
+        header.setStyleSheet(
+            f"background: {COLORS['bg_secondary']}; "
+            f"border-bottom: 1px solid {COLORS['border']};"
+        )
+        h_layout = QHBoxLayout(header)
+        h_layout.setContentsMargins(16, 10, 16, 10)
+        h_layout.setSpacing(10)
+
+        title = QLabel("Desktop Automation Agent")
+        title.setStyleSheet(
+            f"color: {COLORS['text_primary']}; font-size: 15px; font-weight: 700;"
+        )
+        h_layout.addWidget(title)
+        h_layout.addStretch()
+
+        self._spinner = LoadingSpinner(20, COLORS["accent_blue"])
+        h_layout.addWidget(self._spinner)
+
+        self._status_lbl = QLabel("Ready")
+        self._status_lbl.setStyleSheet(
+            f"color: {COLORS['text_secondary']}; font-size: 12px;"
+        )
+        h_layout.addWidget(self._status_lbl)
+
+        self._stop_btn = QPushButton("■ Stop")
+        self._stop_btn.setObjectName("btn_danger")
+        self._stop_btn.setFixedSize(72, 28)
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.clicked.connect(self.stop_requested)
+        h_layout.addWidget(self._stop_btn)
+
+        layout.addWidget(header)
+
+        # ── Messages Area ─────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setStyleSheet("background: transparent; border: none;")
+
+        self._msg_container = QWidget()
+        self._msg_container.setStyleSheet(f"background: {COLORS['bg_primary']};")
+        self._msg_layout = QVBoxLayout(self._msg_container)
+        self._msg_layout.setContentsMargins(16, 16, 16, 16)
+        self._msg_layout.setSpacing(8)
+        self._msg_layout.addStretch()
+
+        # Welcome message
+        self._add_welcome()
+
+        self._scroll.setWidget(self._msg_container)
+        layout.addWidget(self._scroll, 1)
+
+        layout.addWidget(HDivider())
+
+        # ── Input Area ────────────────────────────
+        input_area = QWidget()
+        input_area.setStyleSheet(f"background: {COLORS['bg_secondary']};")
+        i_layout = QVBoxLayout(input_area)
+        i_layout.setContentsMargins(12, 10, 12, 12)
+        i_layout.setSpacing(8)
+
+        # Attachments row (shown when files added)
+        self._attach_row = QWidget()
+        self._attach_row.setStyleSheet("background: transparent;")
+        self._attach_layout = QHBoxLayout(self._attach_row)
+        self._attach_layout.setContentsMargins(0, 0, 0, 0)
+        self._attach_layout.setSpacing(6)
+        self._attach_row.hide()
+        i_layout.addWidget(self._attach_row)
+
+        # Input row
+        input_row = QHBoxLayout()
+        input_row.setSpacing(8)
+
+        self._input = ChatInput()
+        self._input.send_triggered.connect(self._send)
+        self._input.files_dropped.connect(self._on_files_dropped)
+        input_row.addWidget(self._input, 1)
+
+        # Right-side vertical buttons
+        btn_col = QVBoxLayout()
+        btn_col.setSpacing(6)
+
+        self._send_btn = QPushButton("▶")
+        self._send_btn.setObjectName("send_button")
+        self._send_btn.setToolTip("Send (Ctrl+Enter)")
+        self._send_btn.clicked.connect(self._send)
+        btn_col.addWidget(self._send_btn)
+        btn_col.addStretch()
+
+        input_row.addLayout(btn_col)
+        i_layout.addLayout(input_row)
+
+        # Bottom toolbar
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+
+        attach_btn = QPushButton("📎 Attach")
+        attach_btn.setObjectName("btn_icon")
+        attach_btn.setFixedHeight(26)
+        attach_btn.setStyleSheet(
+            f"color: {COLORS['text_secondary']}; font-size: 11px; padding: 2px 10px;"
+        )
+        attach_btn.clicked.connect(self._pick_files)
+        toolbar.addWidget(attach_btn)
+
+        plan_btn = QPushButton("📋 Preview Plan")
+        plan_btn.setObjectName("btn_icon")
+        plan_btn.setFixedHeight(26)
+        plan_btn.setStyleSheet(
+            f"color: {COLORS['text_secondary']}; font-size: 11px; padding: 2px 10px;"
+        )
+        plan_btn.clicked.connect(self.plan_preview_requested)
+        toolbar.addWidget(plan_btn)
+
+        toolbar.addStretch()
+
+        hint_lbl = QLabel("Ctrl+Enter to send  ·  Drag & drop files")
+        hint_lbl.setStyleSheet(
+            f"color: {COLORS['text_muted']}; font-size: 10px;"
+        )
+        toolbar.addWidget(hint_lbl)
+        i_layout.addLayout(toolbar)
+
+        layout.addWidget(input_area)
+
+    # ─────────────────────────────────────────
+    # Message Display
+    # ─────────────────────────────────────────
+
+    def add_message(self, message: Message):
+        """Append a message bubble to the chat area."""
+        ts = message.timestamp.strftime("%H:%M") if hasattr(message, 'timestamp') else ""
+        bubble = ChatBubble(
+            content=message.content,
+            role=message.role.value,
+            timestamp=ts,
+        )
+        bubble.copy_requested.connect(self._copy_text)
+        # Insert before stretch
+        self._msg_layout.insertWidget(self._msg_layout.count() - 1, bubble)
+        self._scroll_to_bottom()
+
+    def add_user_message(self, text: str):
+        from models.schemas import Message as Msg, MessageRole
+        msg = Msg(
+            id="tmp",
+            session_id="tmp",
+            role=MessageRole.USER,
+            content=text,
+        )
+        self.add_message(msg)
+
+    def add_assistant_message(self, text: str):
+        from models.schemas import Message as Msg, MessageRole
+        msg = Msg(
+            id="tmp",
+            session_id="tmp",
+            role=MessageRole.ASSISTANT,
+            content=text,
+        )
+        self.add_message(msg)
+
+    def clear_messages(self):
+        """Remove all messages."""
+        while self._msg_layout.count() > 1:
+            item = self._msg_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._add_welcome()
+
+    def load_history(self, messages: List[Message]):
+        """Load a previous session's messages."""
+        self.clear_messages()
+        for msg in messages:
+            if msg.role in (MessageRole.USER, MessageRole.ASSISTANT):
+                self.add_message(msg)
+
+    # ─────────────────────────────────────────
+    # Status
+    # ─────────────────────────────────────────
+
+    def set_status(self, text: str):
+        self._status_lbl.setText(text)
+
+    def set_processing(self, processing: bool):
+        self._processing = processing
+        self._send_btn.setEnabled(not processing)
+        self._stop_btn.setEnabled(processing)
+        if processing:
+            self._spinner.start()
+        else:
+            self._spinner.stop()
+            self._status_lbl.setText("Ready")
+
+    # ─────────────────────────────────────────
+    # Sending
+    # ─────────────────────────────────────────
+
+    def _send(self):
+        text = self._input.toPlainText().strip()
+        if not text or self._processing:
+            return
+        self._input.clear()
+        attachments = list(self._attachments)
+        self._attachments.clear()
+        self._refresh_attach_row()
+        self.message_submitted.emit(text, attachments)
+
+    def set_input_text(self, text: str):
+        """Programmatically set input text (from quick prompts)."""
+        self._input.setPlainText(text)
+        self._input.setFocus()
+
+    # ─────────────────────────────────────────
+    # File Attachment
+    # ─────────────────────────────────────────
+
+    def _pick_files(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Attach Files",
+            str(Path.home()),
+            "Supported Files (*.xlsx *.xls *.docx *.doc *.csv *.pdf *.txt);;All Files (*)",
+        )
+        if paths:
+            self._on_files_dropped(paths)
+
+    def _on_files_dropped(self, paths: List[str]):
+        for path in paths:
+            if path not in self._attachments:
+                self._attachments.append(path)
+        self._refresh_attach_row()
+
+    def _refresh_attach_row(self):
+        while self._attach_layout.count():
+            item = self._attach_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not self._attachments:
+            self._attach_row.hide()
+            return
+
+        self._attach_row.show()
+        for path in self._attachments:
+            name = Path(path).name
+            chip = QFrame()
+            chip.setStyleSheet(
+                f"background: {COLORS['bg_tertiary']}; border-radius: 12px; "
+                f"border: 1px solid {COLORS['border']};"
+            )
+            c_layout = QHBoxLayout(chip)
+            c_layout.setContentsMargins(8, 3, 8, 3)
+            c_layout.setSpacing(4)
+            name_lbl = QLabel(name)
+            name_lbl.setStyleSheet(
+                f"color: {COLORS['text_secondary']}; font-size: 11px;"
+            )
+            c_layout.addWidget(name_lbl)
+            rm_btn = QPushButton("×")
+            rm_btn.setFixedSize(14, 14)
+            rm_btn.setStyleSheet(
+                f"color: {COLORS['text_muted']}; background: transparent; "
+                f"border: none; font-size: 12px;"
+            )
+            rm_btn.clicked.connect(lambda _, p=path: self._remove_attachment(p))
+            c_layout.addWidget(rm_btn)
+            self._attach_layout.addWidget(chip)
+        self._attach_layout.addStretch()
+
+    def _remove_attachment(self, path: str):
+        self._attachments = [p for p in self._attachments if p != path]
+        self._refresh_attach_row()
+
+    # ─────────────────────────────────────────
+    # Helpers
+    # ─────────────────────────────────────────
+
+    def _add_welcome(self):
+        welcome = QLabel(
+            "👋  Welcome to Desktop Automation Agent\n\n"
+            "Type a request below or choose a Quick Prompt from the sidebar.\n\n"
+            "Examples:\n"
+            "• Summarize the latest sales Excel and create a Word report\n"
+            "• Find overdue invoices and email a summary to the team\n"
+            "• Rewrite the introduction of report.docx professionally"
+        )
+        welcome.setWordWrap(True)
+        welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        welcome.setStyleSheet(
+            f"color: {COLORS['text_muted']}; font-size: 13px; "
+            f"padding: 32px; line-height: 1.7;"
+        )
+        self._msg_layout.insertWidget(0, welcome)
+
+    def _scroll_to_bottom(self):
+        sb = self._scroll.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _copy_text(self, text: str):
+        QApplication.clipboard().setText(text)
+        ToastNotification.show_toast(self, "Copied to clipboard", "success")
