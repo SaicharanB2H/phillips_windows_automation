@@ -32,27 +32,69 @@ from ui.widgets import ChatBubble, HDivider, LoadingSpinner, SectionLabel, Toast
 
 
 class VoiceInputThread(QThread):
+    """
+    Records audio from the microphone and transcribes via Google Speech API.
+    Uses PyAudio (more reliable than sounddevice on Windows) with proper
+    channel handling and amplitude detection.
+    """
     result_ready = Signal(str)
     error_occurred = Signal(str)
 
     SAMPLE_RATE = 16000
+    CHUNK = 1024
 
     def __init__(self):
         super().__init__()
         self._running = True
-        self._stream = None  # ← keep reference for abort
 
     def stop(self):
         self._running = False
-        if self._stream is not None:
+
+    @staticmethod
+    def _find_best_mic(pa) -> tuple:
+        """
+        Probe all input devices and return (device_index, channels) for the
+        first one that actually records non-zero audio.
+        Falls back to the default device if probing fails.
+        """
+        import numpy as _np
+
+        candidates = []
+        for i in range(pa.get_device_count()):
+            info = pa.get_device_info_by_index(i)
+            if info["maxInputChannels"] > 0:
+                candidates.append((i, info))
+
+        for dev_idx, info in candidates:
+            ch = min(int(info["maxInputChannels"]), 2) or 1
             try:
-                self._stream.abort()  # ← unblocks stream.read() immediately
+                s = pa.open(
+                    format=8,  # pyaudio.paInt16
+                    channels=ch,
+                    rate=16000,
+                    input=True,
+                    input_device_index=dev_idx,
+                    frames_per_buffer=1024,
+                )
+                raw = s.read(1024 * 4, exception_on_overflow=False)
+                s.stop_stream()
+                s.close()
+                peak = int(_np.max(_np.abs(_np.frombuffer(raw, dtype=_np.int16))))
+                if peak > 200:
+                    return (dev_idx, ch)
             except Exception:
-                pass
+                continue
+
+        # Fallback: use default device
+        try:
+            info = pa.get_default_input_device_info()
+            return (int(info["index"]), min(int(info["maxInputChannels"]), 2) or 1)
+        except Exception:
+            return (None, 1)
 
     def run(self):
         try:
-            import sounddevice as sd
+            import pyaudio
             import numpy as np
             import speech_recognition as sr
             import io, wave
@@ -60,25 +102,50 @@ class VoiceInputThread(QThread):
             self.error_occurred.emit(f"Missing dependency: {e}")
             return
 
-        chunk = int(self.SAMPLE_RATE * 0.1)
+        pa = None
+        stream = None
         frames = []
 
         try:
-            with sd.InputStream(
-                samplerate=self.SAMPLE_RATE,
-                channels=1,
-                dtype="int16",
-                blocksize=chunk,
-            ) as stream:
-                self._stream = stream
-                while self._running:
-                    data, _ = stream.read(chunk)
-                    frames.append(data.copy())
+            pa = pyaudio.PyAudio()
+
+            # Auto-detect the best working microphone.
+            # The "default" device on Windows MME is often silent;
+            # we probe each input device and pick the first one that
+            # actually records non-zero audio.
+            dev_index, channels = self._find_best_mic(pa)
+
+            stream = pa.open(
+                format=pyaudio.paInt16,
+                channels=channels,
+                rate=self.SAMPLE_RATE,
+                input=True,
+                input_device_index=dev_index,
+                frames_per_buffer=self.CHUNK,
+            )
+
+            while self._running:
+                try:
+                    data = stream.read(self.CHUNK, exception_on_overflow=False)
+                    frames.append(data)
+                except Exception:
+                    break
+
         except Exception as e:
-            self.error_occurred.emit(f"Recording error: {e}")
+            self.error_occurred.emit(f"Microphone error: {e}")
             return
         finally:
-            self._stream = None
+            if stream:
+                try:
+                    stream.stop_stream()
+                    stream.close()
+                except Exception:
+                    pass
+            if pa:
+                try:
+                    pa.terminate()
+                except Exception:
+                    pass
 
         if not frames:
             self.error_occurred.emit("No audio recorded")
@@ -86,14 +153,31 @@ class VoiceInputThread(QThread):
 
         try:
             import numpy as np
-            audio_data = np.concatenate(frames, axis=0)
 
+            # Combine all frames
+            raw = b"".join(frames)
+            audio_np = np.frombuffer(raw, dtype=np.int16)
+
+            # Convert stereo to mono if needed
+            if channels == 2:
+                audio_np = audio_np.reshape(-1, 2).mean(axis=1).astype(np.int16)
+
+            # Check amplitude — warn if too quiet
+            peak = int(np.max(np.abs(audio_np)))
+            if peak < 100:
+                self.error_occurred.emit(
+                    "Microphone seems muted or too quiet — "
+                    "check your mic settings in Windows Sound Settings"
+                )
+                return
+
+            # Convert to WAV for speech_recognition
             wav_buffer = io.BytesIO()
             with wave.open(wav_buffer, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
                 wf.setframerate(self.SAMPLE_RATE)
-                wf.writeframes(audio_data.tobytes())
+                wf.writeframes(audio_np.tobytes())
             wav_buffer.seek(0)
 
             recognizer = sr.Recognizer()
@@ -101,10 +185,13 @@ class VoiceInputThread(QThread):
                 audio = recognizer.record(source)
 
             text = recognizer.recognize_google(audio)
-            self.result_ready.emit(text)
+            if text:
+                self.result_ready.emit(text)
+            else:
+                self.error_occurred.emit("No speech detected — try again")
 
         except sr.UnknownValueError:
-            self.error_occurred.emit("Could not understand audio — please speak clearly")
+            self.error_occurred.emit("Could not understand audio — please speak clearly and closer to the mic")
         except sr.RequestError as e:
             self.error_occurred.emit(f"Google Speech API error: {e}")
         except Exception as e:

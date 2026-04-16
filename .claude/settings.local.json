@@ -29,7 +29,10 @@
       "Read(//c/Program Files/LibreOffice/program/**)",
       "Bash(powershell -Command ':*)",
       "Bash(rm -f slide-*.jpg)",
-      "Bash(pdftoppm -jpeg -r 150 DesktopAutomationAgent.pdf slide)"
+      "Bash(pdftoppm -jpeg -r 150 DesktopAutomationAgent.pdf slide)",
+      "Bash(python -c \"import speech_recognition; print\\('OK', speech_recognition.__version__\\)\")",
+      "Bash(python -c \"from ui.chat_panel import ChatPanel, VoiceInputThread; print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('agents/excel_agent.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")"
     ]
   }
 }

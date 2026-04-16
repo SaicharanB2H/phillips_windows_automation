@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 
 from icons.icon_manager import get_icon
 from models.schemas import Artifact, ExecutionPlan, PlanStep
+from ui.app_launcher_panel import AppLauncherPanel
 from ui.artifact_panel import ArtifactPanel
 from ui.log_panel import LogPanel
 from ui.plan_viewer import PlanViewer
@@ -27,12 +28,15 @@ class ExecutionPanel(QTabWidget):
 
     retry_step_requested = Signal(str)  # step_id
     artifact_opened      = Signal(str)  # file path
+    launch_app_requested = Signal(str)  # app name
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setTabPosition(QTabWidget.TabPosition.North)
         self.setDocumentMode(False)
         self._setup_tabs()
+        # Load app list when the Apps tab is first shown
+        self.currentChanged.connect(self._on_tab_changed)
 
     def _setup_tabs(self):
         _icon_size = 14
@@ -59,6 +63,17 @@ class ExecutionPanel(QTabWidget):
         self._log_panel = LogPanel()
         self.addTab(self._log_panel, "  Log")
         self.setTabIcon(3, get_icon("terminal", size=_icon_size, color=_icon_color))
+
+        # ── Tab 5: App Launcher ───────────────────
+        self._app_launcher = AppLauncherPanel()
+        self._app_launcher.launch_requested.connect(self.launch_app_requested)
+        self.addTab(self._app_launcher, "  Apps")
+        self.setTabIcon(4, get_icon("monitor", size=_icon_size, color=_icon_color))
+
+    def _on_tab_changed(self, index: int):
+        """Lazily load the app list the first time the Apps tab is opened."""
+        if index == 4:
+            self._app_launcher.load_apps()
 
     # ─────────────────────────────────────────
     # Public API called by MainWindow
@@ -99,7 +114,7 @@ class ExecutionPanel(QTabWidget):
 class AgentsStatusTab(QWidget):
     """Shows a live badge for each agent with active/idle state."""
 
-    AGENTS = ["planner", "excel", "word", "email", "file", "ui_automation"]
+    AGENTS = ["planner", "file", "excel", "word", "email", "memory", "app_launcher", "ui_automation"]
 
     def __init__(self, parent=None):
         super().__init__(parent)

@@ -18,7 +18,7 @@ def load_env():
     """Load .env file before anything else."""
     env_file = Path(__file__).parent / ".env"
     if not env_file.exists():
-        # Try .env.example as fallback for first run
+        
         example = Path(__file__).parent / ".env.example"
         if example.exists():
             print(

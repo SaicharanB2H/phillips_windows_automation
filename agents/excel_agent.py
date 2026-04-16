@@ -307,7 +307,7 @@ class ExcelAgent(BaseAgent):
         # Cache as DataFrame for summaries
         if _OPENPYXL_AVAILABLE:
             import pandas as pd
-            self._df_cache[sheet_name] = pd.DataFrame(rows)
+            self._df_cache[sheet_name] = self._clean_dataframe(pd.DataFrame(rows))
 
         return {
             "sheet": sheet_name,
@@ -331,7 +331,7 @@ class ExcelAgent(BaseAgent):
 
         if _OPENPYXL_AVAILABLE:
             import pandas as pd
-            self._df_cache[sheet_name] = pd.DataFrame(rows)
+            self._df_cache[sheet_name] = self._clean_dataframe(pd.DataFrame(rows))
 
         return {
             "sheet": sheet_name,
@@ -339,6 +339,50 @@ class ExcelAgent(BaseAgent):
             "rows": rows,
             "row_count": len(rows),
         }
+
+    @staticmethod
+    def _clean_dataframe(df) -> "pd.DataFrame":
+        """
+        Sanitise a freshly-loaded DataFrame:
+        - Coerce columns that look numeric to proper numeric dtype
+        - Strip whitespace from string columns
+        - Drop fully-empty rows
+        """
+        import pandas as pd
+
+        for col in df.columns:
+            # Try to coerce object columns to numeric (handles "100", "200.5", None)
+            if df[col].dtype == object:
+                numeric = pd.to_numeric(df[col], errors="coerce")
+                # Only convert if at least 50% of non-null values parsed as numbers
+                non_null = df[col].dropna()
+                numeric_non_null = numeric.dropna()
+                if len(non_null) > 0 and len(numeric_non_null) / len(non_null) >= 0.5:
+                    df[col] = numeric
+                else:
+                    # Clean string columns — strip whitespace, replace empty strings with NaN
+                    df[col] = df[col].apply(
+                        lambda x: x.strip() if isinstance(x, str) else x
+                    )
+                    df[col] = df[col].replace("", pd.NA)
+
+        # Drop fully-empty rows
+        df = df.dropna(how="all").reset_index(drop=True)
+        return df
+
+    @staticmethod
+    def _safe_dict_rows(df) -> list:
+        """
+        Convert DataFrame rows to a list of dicts with NaN replaced by None.
+        This ensures the result is JSON-serializable.
+        """
+        import math
+        rows = df.to_dict("records")
+        for row in rows:
+            for k, v in row.items():
+                if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                    row[k] = None
+        return rows
 
     def read_range(self, sheet_name: str, range_ref: str) -> Dict[str, Any]:
         """Read a specific cell range."""
@@ -389,21 +433,36 @@ class ExcelAgent(BaseAgent):
         if columns:
             df = df[[c for c in columns if c in df.columns]]
 
+        import math
+
         numeric_cols = df.select_dtypes(include="number").columns.tolist()
 
         summary = {}
         for col in numeric_cols:
             s = df[col].dropna()
+            if s.empty:
+                # All values are NaN/empty — skip or report zeros
+                summary[col] = {
+                    "total": 0, "mean": 0, "min": 0, "max": 0,
+                    "count": 0, "std": 0, "empty": True,
+                }
+                continue
+
+            # Safe float conversion — guard against NaN/Inf
+            def _safe(v):
+                f = float(v)
+                return 0.0 if (math.isnan(f) or math.isinf(f)) else f
+
             summary[col] = {
-                "total": float(s.sum()),
-                "mean": float(s.mean()),
-                "min": float(s.min()),
-                "max": float(s.max()),
+                "total": _safe(s.sum()),
+                "mean": _safe(s.mean()),
+                "min": _safe(s.min()),
+                "max": _safe(s.max()),
                 "count": int(s.count()),
-                "std": float(s.std()) if len(s) > 1 else 0.0,
+                "std": _safe(s.std()) if len(s) > 1 else 0.0,
             }
 
-        top_rows = df.head(5).to_dict("records") if not df.empty else []
+        top_rows = self._safe_dict_rows(df.head(5)) if not df.empty else []
 
         return {
             "sheet": sheet_name,
@@ -454,13 +513,37 @@ class ExcelAgent(BaseAgent):
         }
         agg_fn = agg_map.get(agg.lower(), "sum")
 
-        grouped = df.groupby(group_column)[value_column].agg(agg_fn).reset_index()
+        import math
+
+        # Drop rows where the group column or value column is NaN — can't group by null
+        clean = df.dropna(subset=[group_column, value_column]).copy()
+
+        # Ensure value column is numeric
+        import pandas as _pd
+        clean[value_column] = _pd.to_numeric(clean[value_column], errors="coerce")
+        clean = clean.dropna(subset=[value_column])
+
+        if clean.empty:
+            logger.warning(f"group_by: no valid data after dropping NaN rows")
+            return {
+                "group_column": group_column,
+                "value_column": value_column,
+                "aggregation": agg_fn,
+                "groups": [],
+                "group_count": 0,
+                "grand_total": 0,
+                "table_data": [],
+                "table_headers": [group_column, f"{agg_fn}_{value_column}"],
+            }
+
+        grouped = clean.groupby(group_column)[value_column].agg(agg_fn).reset_index()
         grouped.columns = [group_column, f"{agg_fn}_{value_column}"]
         # Sort descending by value
         grouped = grouped.sort_values(f"{agg_fn}_{value_column}", ascending=False)
 
-        rows = grouped.to_dict("records")
-        total = float(grouped[f"{agg_fn}_{value_column}"].sum()) if agg_fn == "sum" else None
+        rows = self._safe_dict_rows(grouped)
+        grand_total_raw = float(grouped[f"{agg_fn}_{value_column}"].sum()) if agg_fn == "sum" else None
+        total = 0.0 if (grand_total_raw is not None and math.isnan(grand_total_raw)) else grand_total_raw
 
         logger.info(
             f"group_by: {group_column} → {value_column} ({agg_fn}) — {len(rows)} groups"

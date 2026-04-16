@@ -6,8 +6,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget,
-    QListWidgetItem, QPushButton, QScrollArea, QSizePolicy,
+    QComboBox, QFrame, QHBoxLayout, QInputDialog, QLabel, QListWidget,
+    QListWidgetItem, QMenu, QPushButton, QScrollArea, QSizePolicy,
     QVBoxLayout, QWidget,
 )
 
@@ -29,10 +29,12 @@ class SidebarPanel(QWidget):
     - Quick prompt library
     """
 
-    session_selected      = Signal(str)     # session_id
-    new_session_requested = Signal()
-    mode_changed          = Signal(str)     # ExecutionMode value
-    prompt_selected       = Signal(str)     # prompt text
+    session_selected      = Signal(str)        # session_id
+    new_session_requested = Signal(str)        # session name chosen by user
+    session_renamed       = Signal(str, str)   # session_id, new_name
+    session_deleted       = Signal(str)        # session_id
+    mode_changed          = Signal(str)        # ExecutionMode value
+    prompt_selected       = Signal(str)        # prompt text
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -108,7 +110,7 @@ class SidebarPanel(QWidget):
             f"QPushButton:hover {{ background: {COLORS.get('accent_blue_hover', '#388BFD')}; }}"
             f"QPushButton:pressed {{ background: {COLORS.get('accent_blue_active', '#2563EB')}; }}"
         )
-        new_btn.clicked.connect(self.new_session_requested)
+        new_btn.clicked.connect(self._on_new_session_clicked)
         n_layout.addWidget(new_btn)
         layout.addWidget(new_btn_wrap)
 
@@ -132,6 +134,9 @@ class SidebarPanel(QWidget):
         )
         self._session_list.setMaximumHeight(160)
         self._session_list.itemClicked.connect(self._on_session_clicked)
+        self._session_list.itemDoubleClicked.connect(self._on_session_double_clicked)
+        self._session_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._session_list.customContextMenuRequested.connect(self._on_session_context_menu)
         layout.addWidget(self._session_list)
         layout.addWidget(HDivider())
 
@@ -288,7 +293,16 @@ class SidebarPanel(QWidget):
         self._sessions[session.id] = session
         item = QListWidgetItem(self._session_icon, f"  {session.name}")
         item.setData(Qt.ItemDataRole.UserRole, session.id)
+        item.setToolTip("Double-click to rename · Right-click for options")
         self._session_list.insertItem(0, item)
+
+    def rename_session_item(self, session_id: str, new_name: str):
+        """Update the displayed name of a session item in the list."""
+        for i in range(self._session_list.count()):
+            item = self._session_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == session_id:
+                item.setText(f"  {new_name}")
+                break
 
     def set_active_session(self, session_id: str):
         self._active_session_id = session_id
@@ -337,10 +351,87 @@ class SidebarPanel(QWidget):
             get_memory_store().clear_all()
             self._refresh_memory_count()
 
+    def _on_new_session_clicked(self):
+        """Prompt for a session name before creating."""
+        name, ok = QInputDialog.getText(
+            self,
+            "New Session",
+            "Session name:",
+            text="New Session",
+        )
+        if ok:
+            name = name.strip() or "New Session"
+            self.new_session_requested.emit(name)
+
     def _on_session_clicked(self, item: QListWidgetItem):
         session_id = item.data(Qt.ItemDataRole.UserRole)
         if session_id:
             self.session_selected.emit(session_id)
+
+    def _on_session_double_clicked(self, item: QListWidgetItem):
+        """Rename a session on double-click."""
+        self._rename_item(item)
+
+    def _on_session_context_menu(self, pos):
+        """Right-click context menu on a session item."""
+        item = self._session_list.itemAt(pos)
+        if not item:
+            return
+        session_id = item.data(Qt.ItemDataRole.UserRole)
+        if not session_id:
+            return
+
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu {{ background: {COLORS['bg_tertiary']}; color: {COLORS['text_primary']}; "
+            f"border: 1px solid {COLORS['border']}; border-radius: 6px; padding: 4px; }}"
+            f"QMenu::item {{ padding: 6px 20px; border-radius: 4px; font-size: 12px; }}"
+            f"QMenu::item:selected {{ background: {COLORS['bg_hover']}; }}"
+        )
+        rename_action = menu.addAction("✏️  Rename")
+        menu.addSeparator()
+        delete_action = menu.addAction("🗑️  Delete")
+
+        action = menu.exec(self._session_list.mapToGlobal(pos))
+        if action == rename_action:
+            self._rename_item(item)
+        elif action == delete_action:
+            self._delete_item(item)
+
+    def _rename_item(self, item: QListWidgetItem):
+        """Show inline rename dialog for a session item."""
+        session_id = item.data(Qt.ItemDataRole.UserRole)
+        current_name = item.text().strip()
+        name, ok = QInputDialog.getText(
+            self,
+            "Rename Session",
+            "New name:",
+            text=current_name,
+        )
+        if ok:
+            name = name.strip() or current_name
+            item.setText(f"  {name}")
+            if session_id in self._sessions:
+                self._sessions[session_id].name = name
+            self.session_renamed.emit(session_id, name)
+
+    def _delete_item(self, item: QListWidgetItem):
+        """Delete a session after confirmation."""
+        from PySide6.QtWidgets import QMessageBox
+        session_id = item.data(Qt.ItemDataRole.UserRole)
+        name = item.text().strip()
+        reply = QMessageBox.question(
+            self,
+            "Delete Session",
+            f"Delete session \"{name}\"?\n\nThis will remove all messages and history.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            row = self._session_list.row(item)
+            self._session_list.takeItem(row)
+            self._sessions.pop(session_id, None)
+            self.session_deleted.emit(session_id)
 
     def _on_mode_changed(self, index: int):
         val = self._mode_combo.itemData(index)

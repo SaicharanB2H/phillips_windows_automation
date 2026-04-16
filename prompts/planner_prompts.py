@@ -166,7 +166,13 @@ the SEQUENCE of steps, not to know every detail upfront.
    - Column name unknown → use excel.read_sheet first
    - "Which column to group by" → read the sheet, infer from data
    - "Which PDF reader" → always use files.read_pdf (never ask)
-3. Always mark email sending as requires_approval=true with an approval_message.
+3. EMAIL RULE — CRITICAL:
+   - When the user says "email", "send email", "send it", "mail it" — you MUST generate TWO steps:
+     Step A: email.create_draft(to, subject, body, attachments) — creates the draft
+     Step B: email.send_draft(draft_id="{{step_A.result.draft_id}}") — actually SENDS it
+   - NEVER generate only email.create_draft without email.send_draft — the email will NOT be sent.
+   - The send step MUST reference {{step_N.result.draft_id}} from the create_draft step.
+   - Always mark the send_draft step as requires_approval=true with an approval_message.
 4. Mark file deletion or overwriting as requires_approval=true.
 5. Prefer COM automation tools first (excel., word., email.), then file-library fallbacks.
 6. Order steps logically — file discovery before reading, reading before summarizing, etc.

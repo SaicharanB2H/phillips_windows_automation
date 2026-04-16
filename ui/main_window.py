@@ -173,11 +173,14 @@ class MainWindow(QMainWindow):
         # ── Sidebar ──────────────────────────────
         self._sidebar.new_session_requested.connect(self._new_session)
         self._sidebar.session_selected.connect(self._switch_session)
+        self._sidebar.session_renamed.connect(self._on_session_renamed)
+        self._sidebar.session_deleted.connect(self._on_session_deleted)
         self._sidebar.mode_changed.connect(self._on_mode_changed)
         self._sidebar.prompt_selected.connect(self._chat.set_input_text)
 
         # ── Execution panel ──────────────────────
         self._exec_panel.retry_step_requested.connect(self._retry_step)
+        self._exec_panel.launch_app_requested.connect(self._launch_app)
 
     # ─────────────────────────────────────────
     # Orchestrator Slots
@@ -292,15 +295,36 @@ class MainWindow(QMainWindow):
         )
         self._orchestrator.submit_request(request)
 
-    @Slot()
-    def _new_session(self):
-        session = self._orchestrator.create_session()
+    @Slot(str)
+    def _new_session(self, name: str = "New Session"):
+        session = self._orchestrator.create_session(name=name)
         self._current_session = session
         self._sidebar.add_session(session)
         self._sidebar.set_active_session(session.id)
         self._chat.clear_messages()
         self._exec_panel.clear_session()
-        logger.info(f"New session started: {session.id}")
+        logger.info(f"New session started: {session.id} — {name}")
+
+    @Slot(str, str)
+    def _on_session_renamed(self, session_id: str, new_name: str):
+        """Persist the renamed session to DB."""
+        self._orchestrator._db.update_session(session_id, name=new_name)
+        # Update in-memory session state if loaded
+        session = self._orchestrator.get_session(session_id)
+        if session:
+            session.name = new_name
+        logger.info(f"Session renamed: {session_id} → {new_name!r}")
+
+    @Slot(str)
+    def _on_session_deleted(self, session_id: str):
+        """Delete session from DB and switch to a new one if it was active."""
+        self._orchestrator._db.delete_session(session_id)
+        self._orchestrator._sessions.pop(session_id, None)
+        logger.info(f"Session deleted: {session_id}")
+        # If the deleted session was active, start a fresh one
+        if self._current_session and self._current_session.id == session_id:
+            self._current_session = None
+            self._new_session("New Session")
 
     @Slot(str)
     def _switch_session(self, session_id: str):
@@ -324,6 +348,22 @@ class MainWindow(QMainWindow):
         logger.info(f"Execution mode changed to: {mode_value}")
 
     @Slot(str)
+    def _launch_app(self, app_name: str):
+        """Directly launch an app by name — bypasses LLM, instant execution."""
+        from agents.app_launcher_agent import AppLauncherAgent
+        try:
+            agent = AppLauncherAgent()
+            result = agent.open_app(app_name)
+            msg = result.get("message", f"Opened {app_name}")
+            ToastNotification.show_toast(self, msg, "success")
+            self._status_bar.showMessage(msg, 3000)
+            logger.info(f"App launched from panel: {app_name}")
+        except Exception as e:
+            err = str(e).split("\n")[0]  # first line only
+            ToastNotification.show_toast(self, f"Could not open '{app_name}': {err}", "error")
+            logger.warning(f"App launch failed: {app_name} — {e}")
+
+    @Slot(str)
     def _retry_step(self, step_id: str):
         ToastNotification.show_toast(
             self, "Retry not yet implemented for individual steps", "warning"
@@ -339,7 +379,7 @@ class MainWindow(QMainWindow):
         for s in saved:
             self._sidebar.add_session(s)
 
-        self._new_session()
+        self._new_session("New Session")
 
     def _check_environment(self):
         """Check API key and Office availability, update status bar."""
