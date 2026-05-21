@@ -1,3 +1,7 @@
+<img width="1080" height="644" alt="Screenshot_2026-05-21-12-28-41-19" src="https://github.com/user-attachments/assets/c0cf69d4-aadc-48e0-bad3-47f39a48e894" />
+<img width="1920" height="1080" alt="working" src="https://github.com/user-attachments/assets/7ab46a7b-36df-49f3-b06e-ff54383c8b8d" />
+<img width="1920" height="1080" alt="permission" src="https://github.com/user-attachments/assets/c27c3c13-7721-4f98-9649-a7e2d9faaad4" />
+<img width="1918" height="1078" alt="homescreen" src="https://github.com/user-attachments/assets/fc658f11-b2d6-4e1d-90cb-af3e0ff963ed" />
 # Desktop Automation Agent
 
 A production-grade AI-powered Windows desktop automation system with a polished PySide6 frontend. Type natural language — the agent plans and executes multi-step workflows automatically.
